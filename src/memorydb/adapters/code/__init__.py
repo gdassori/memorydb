@@ -82,6 +82,13 @@ class CodeAdapter:
         self._parsers: dict = {}
 
     # --- public ------------------------------------------------------------
+    def handles(self, path: str) -> bool:
+        return self.registry.spec_for(path) is not None
+
+    def lang_of(self, path: str) -> Optional[str]:
+        spec = self.registry.spec_for(path)
+        return spec.name if spec else None
+
     def extract(self, path: str) -> Extraction:
         spec = self.registry.spec_for(path)
         if spec is None:

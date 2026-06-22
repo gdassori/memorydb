@@ -1,6 +1,6 @@
 ---
 title: "Indexer & ingestion pipeline"
-status: planned
+status: active
 created: 2026-06-22
 author: claude
 related_tds: [TD-003, TD-005, TD-006]
@@ -108,12 +108,12 @@ to tens of thousands of files for an embedded use case.
 
 ## Tasks
 
-- [ ] directory walk + `IgnoreMatcher` + binary/size/symlink policy
-- [ ] per-file sha256/mtime diff against `file` nodes; delete + cascade for removed/changed
-- [ ] two-pass node-then-edge upsert with buffered unresolved edges + report
-- [ ] embedding hook over `dirty_nodes()` in batches
-- [ ] `IndexReport` + structured logging
-- [ ] zero-dep tests with `FakeExtractor` (counts / incremental / change / delete / forward-ref)
+- [x] directory walk + `IgnoreMatcher` (ignored dirs + binary/size sniff); only files an extractor handles
+- [x] per-file sha256 diff against `file` nodes; delete-by-`attrs.file_uid` for removed/changed (edges cascade)
+- [x] two-pass node-then-edge upsert; pending edges resolved globally by name (single match → edge, else unresolved) + `IndexReport`
+- [x] embedding hook over `dirty_nodes()` (via `EmbeddingPipeline`)
+- [x] zero-dep `FakeExtractor` tests (cross-file resolve / incremental-skip / change / delete-cascade) + end-to-end Python (index → cross-file edge → LOCATE) — 4 green
+- [ ] structured logging; resumable-after-crash hardening; symlink-loop guard; mtime fast-path before hashing
 
 ## Open questions
 

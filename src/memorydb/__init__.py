@@ -7,6 +7,7 @@ from __future__ import annotations
 from . import query
 from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
+from .indexer import IgnoreMatcher, Indexer, IndexReport
 from .models import Edge, Intent, Node, Rel
 from .planner import DefaultIntentClassifier, RetrievalPlanner
 from .store import Store
@@ -28,6 +29,9 @@ __all__ = [
     "EmbeddingPipeline",
     "DefaultSerializer",
     "EmbedReport",
+    "Indexer",
+    "IndexReport",
+    "IgnoreMatcher",
     "query",
 ]
 
