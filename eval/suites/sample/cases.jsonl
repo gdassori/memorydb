@@ -1,0 +1,3 @@
+{"query": "send_notification", "intent": "LOCATE", "expected_uids": ["jobs.py::MassNotificationJob.run"]}
+{"query": "enqueue", "intent": "LOCATE", "expected_uids": ["notifications.py::send_notification"]}
+{"query": "send a notification to a user", "intent": "EXPLAIN", "expected_uids": ["notifications.py::send_notification", "notifications.py::enqueue"]}

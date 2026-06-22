@@ -12,6 +12,7 @@ dependencies = []  # zero-dependency core (TD-004)
 
 [project.scripts]
 memorydb = "memorydb.cli:main"
+memorydb-eval = "memorydb.eval.cli:main"
 
 [project.optional-dependencies]
 vector = ["sqlite-vec>=0.1.0"]            # ANN accelerator (TD-004)
