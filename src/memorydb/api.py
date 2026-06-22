@@ -12,7 +12,8 @@ supersede ``_pack_*`` with a richer ContextBuilder (kept behind the same ``Conte
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, Field
 
 from . import query as Q
 from .embedders import HashingEmbedder
@@ -42,8 +43,7 @@ class ExtractorRegistry:
             return []
 
 
-@dataclass
-class ContextResult:
+class ContextResult(BaseModel):
     """A token-budgeted, LLM-ready packing of a retrieval result.
 
     ``truncated`` is True when the budget cut off content. ``used_tokens`` is an estimate (≈4 chars/
@@ -51,7 +51,7 @@ class ContextResult:
     ContextBuilder (context-builder-packing spec)."""
 
     text: str
-    uids: list = field(default_factory=list)
+    uids: list = Field(default_factory=list)
     used_tokens: int = 0
     budget_tokens: int = 0
     truncated: bool = False

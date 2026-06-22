@@ -25,8 +25,9 @@ core/      -> store · query (recursive CTE) · vector · planner (intent routin
 storage/   -> SQLite (+ optional sqlite-vec)
 ```
 
-The **core has zero third-party dependencies** and runs out of the box
-([TD-004](docs/decisions/TD-004-zero-dep-core-bruteforce-vectors.md)).
+The **core depends only on `pydantic`** (the models are `BaseModel`s) — no native build, no ANN engine;
+vectors are exact brute-force by default
+([TD-004](docs/decisions/TD-004-zero-dep-core-bruteforce-vectors.md), revised 2026-06-22).
 
 ## Quickstart
 
@@ -53,12 +54,12 @@ for direct use.
 ## Status
 
 v0 substrate + retrieval planner — see [docs/specs/active/v0-substrate.md](docs/specs/active/v0-substrate.md).
-Optional extras: `pip install -e '.[vector]'` (sqlite-vec), `'.[code]'` (tree-sitter), `'.[graph]'` (networkx), `'.[dev]'` (pytest).
+Core needs `pydantic`; optional extras: `pip install -e '.[vector]'` (sqlite-vec), `'.[code]'` (tree-sitter), `'.[graph]'` (networkx), `'.[dev]'` (pytest).
 
 ## Tests
 
 ```bash
-python tests/test_substrate.py      # stdlib only, no installs
+python tests/test_substrate.py      # core only (needs pydantic)
 # or
 pytest                              # needs the [dev] extra
 ```

@@ -7,17 +7,19 @@ Forward-only: opening a DB newer than this build raises rather than corrupting d
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+from pydantic import BaseModel, ConfigDict
 
 # Migration 1's body. Pure DDL (no connection pragmas), so it can run statement-by-statement
 # inside the per-migration transaction (executescript would auto-commit and break atomicity).
 _BASELINE = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
-@dataclass(frozen=True)
-class Migration:
+class Migration(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     version: int
     name: str
     apply: Callable[[sqlite3.Connection], None]
@@ -71,10 +73,10 @@ def _m4_pending_edges(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS: list[Migration] = [
-    Migration(1, "baseline", _m1_baseline),
-    Migration(2, "meta", _m2_meta),
-    Migration(3, "file_uid_index", _m3_file_uid_index),
-    Migration(4, "pending_edges", _m4_pending_edges),
+    Migration(version=1, name="baseline", apply=_m1_baseline),
+    Migration(version=2, name="meta", apply=_m2_meta),
+    Migration(version=3, name="file_uid_index", apply=_m3_file_uid_index),
+    Migration(version=4, name="pending_edges", apply=_m4_pending_edges),
     # Future (documented in specs, not yet coded):
     #   5: node_history / edge_history (TD-009 temporal identity)
     #   6: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)

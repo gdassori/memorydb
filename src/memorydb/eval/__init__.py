@@ -14,8 +14,9 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict, dataclass, field
 from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 HIGH_CONF = 0.9  # confidence floor for the "precise-only" LOCATE precision column (TD-005)
 
@@ -84,29 +85,29 @@ def ndcg_at_k(ranked, expected, k: int, gains: Optional[dict] = None) -> float:
 
 
 # --- data model ------------------------------------------------------------
-@dataclass
-class EvalCase:
+class EvalCase(BaseModel):
+    # forbid extra keys so a malformed cases.jsonl line raises rather than silently dropping fields.
+    model_config = ConfigDict(extra="forbid")
+
     query: str
     intent: str                       # LOCATE | EXPLAIN | FILTER
-    expected_uids: list = field(default_factory=list)
+    expected_uids: list = Field(default_factory=list)
     gains: Optional[dict] = None      # optional graded relevance for nDCG
 
 
-@dataclass
-class Scorecard:
-    locate: dict = field(default_factory=dict)    # {precision, precision_high, recall, f1, n}
-    explain: dict = field(default_factory=dict)   # {recall_at_k, mrr, ndcg, n}
-    per_case: list = field(default_factory=list)
-    broken: list = field(default_factory=list)    # queries excluded for label drift
+class Scorecard(BaseModel):
+    locate: dict = Field(default_factory=dict)    # {precision, precision_high, recall, f1, n}
+    explain: dict = Field(default_factory=dict)   # {recall_at_k, mrr, ndcg, n}
+    per_case: list = Field(default_factory=list)
+    broken: list = Field(default_factory=list)    # queries excluded for label drift
     k: int = 10
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return self.model_dump()
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scorecard":
-        return cls(locate=d.get("locate", {}), explain=d.get("explain", {}),
-                   per_case=d.get("per_case", []), broken=d.get("broken", []), k=d.get("k", 10))
+        return cls.model_validate(d)
 
 
 # --- evaluator -------------------------------------------------------------

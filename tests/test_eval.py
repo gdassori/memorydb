@@ -111,9 +111,9 @@ def test_end_to_end_inline_fake():
         db = MemoryDB.open(":memory:", extractors=[FakeExtractor()])
     db.index(_fake_repo())
     cases = [
-        EvalCase("foo", "LOCATE", ["a.fake::g"]),
-        EvalCase("foo", "EXPLAIN", ["b.fake::foo"]),
-        EvalCase("ghost", "LOCATE", ["does.not::exist"]),   # broken: label drift
+        EvalCase(query="foo", intent="LOCATE", expected_uids=["a.fake::g"]),
+        EvalCase(query="foo", intent="EXPLAIN", expected_uids=["b.fake::foo"]),
+        EvalCase(query="ghost", intent="LOCATE", expected_uids=["does.not::exist"]),  # broken: label drift
     ]
     card = Evaluator(db).run(cases, k=10)
     assert card.locate["precision"] == 1.0 and card.locate["recall"] == 1.0

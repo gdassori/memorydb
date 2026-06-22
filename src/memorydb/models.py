@@ -2,13 +2,17 @@
 
 The substrate knows only ``Node`` / ``Edge`` / ``Vector``. Adapters (code, memory) map
 their concepts onto these. No code- or memory-specific fields live here.
+
+Models are pydantic ``BaseModel``s — validation + ergonomics over plain dataclasses (TD-004, revised
+2026-06-22: pydantic is an allowed core dependency). Construct with keyword arguments.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class Intent(str, Enum):
@@ -19,8 +23,10 @@ class Intent(str, Enum):
     FILTER = "FILTER"   # SQL over attributes (adapter-specific)
 
 
-class Rel:
-    """Common relation labels. Open-ended — adapters may introduce others."""
+class Rel(str, Enum):
+    """Common relation labels. A ``str`` enum so a member is usable directly as the edge ``relation``
+    (stored as its value, e.g. ``"CALLS"``). Not exhaustive — adapters may also pass a raw string for
+    a relation not listed here (``Edge.relation`` is typed ``str``)."""
 
     CALLS = "CALLS"
     IMPORTS = "IMPORTS"
@@ -33,15 +39,14 @@ class Rel:
     PRODUCES = "PRODUCES"
 
 
-@dataclass
-class Node:
+class Node(BaseModel):
     """A generic graph node. ``uid`` is the stable external identity (e.g. a symbol FQN)."""
 
     uid: str
     type: str
     name: str
     body: Optional[str] = None
-    attrs: dict = field(default_factory=dict)
+    attrs: dict = Field(default_factory=dict)
     source: Optional[str] = None
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
@@ -61,8 +66,7 @@ class Node:
         }
 
 
-@dataclass
-class Edge:
+class Edge(BaseModel):
     """A directed, typed relation between two nodes (by uid)."""
 
     src: str

@@ -65,7 +65,8 @@ def test_partial_failure_rolls_back():
         raise RuntimeError("boom")  # after a write, before the version bump
 
     conn = sqlite3.connect(":memory:")
-    migs = [Migration(1, "good", good), Migration(2, "bad", bad)]
+    migs = [Migration(version=1, name="good", apply=good),
+            Migration(version=2, name="bad", apply=bad)]
     try:
         migrate(conn, migrations=migs)
         assert False, "expected the failing migration to raise"

@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Embedded knowledge substrate (relational + graph + vectors) for local LLMs"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []  # zero-dependency core (TD-004)
+dependencies = ["pydantic>=2"]  # models are pydantic BaseModels (TD-004, revised 2026-06-22)
 
 [project.scripts]
 memorydb = "memorydb.cli:main"

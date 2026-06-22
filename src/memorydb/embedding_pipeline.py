@@ -6,8 +6,9 @@ only `embed_dirty` nodes. The serialization is deterministic so embeddings are r
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Optional, Protocol
+
+from pydantic import BaseModel
 
 from . import query as Q
 
@@ -58,8 +59,7 @@ class DefaultSerializer:
         return "\n".join(lines)
 
 
-@dataclass
-class EmbedReport:
+class EmbedReport(BaseModel):
     embedded: int = 0
     batches: int = 0
     failed: int = 0

@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from .models import Node
 
@@ -39,8 +40,7 @@ class IgnoreMatcher:
             return True
 
 
-@dataclass
-class IndexReport:
+class IndexReport(BaseModel):
     files_seen: int = 0
     files_indexed: int = 0
     files_skipped: int = 0
@@ -51,11 +51,10 @@ class IndexReport:
     embedded: int = 0
 
 
-@dataclass
-class _Merged:
-    nodes: list = field(default_factory=list)
-    edges: list = field(default_factory=list)
-    pending: list = field(default_factory=list)
+class _Merged(BaseModel):
+    nodes: list = Field(default_factory=list)
+    edges: list = Field(default_factory=list)
+    pending: list = Field(default_factory=list)
     lang: Optional[str] = None
 
 
