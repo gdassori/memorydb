@@ -72,7 +72,7 @@ def ndcg_at_k(ranked, expected, k: int, gains: Optional[dict] = None) -> float:
     exp = set(expected)
 
     def rel(uid):
-        if gains is not None:
+        if gains:  # falsy (None or empty) → binary relevance, so an empty dict can't zero a labelled case (I16)
             return float(gains.get(uid, 0.0))
         return 1.0 if uid in exp else 0.0
 

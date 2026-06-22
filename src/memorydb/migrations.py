@@ -39,13 +39,27 @@ def _m2_meta(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
 
+def _m3_file_uid_index(conn: sqlite3.Connection) -> None:
+    # An indexable handle on attrs.file_uid: a VIRTUAL generated column (computed, not stored) plus an
+    # index, so deleting a file's symbols is an indexed lookup instead of a full json_extract scan
+    # (perf I8). Also a partial index on the staleness flag so refresh() finds the dirty set without
+    # scanning every node (perf I12).
+    conn.execute(
+        "ALTER TABLE nodes ADD COLUMN file_uid TEXT "
+        "GENERATED ALWAYS AS (json_extract(attrs, '$.file_uid')) VIRTUAL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_file_uid ON nodes(file_uid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_dirty ON nodes(embed_dirty) WHERE embed_dirty = 1")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline", _m1_baseline),
     Migration(2, "meta", _m2_meta),
+    Migration(3, "file_uid_index", _m3_file_uid_index),
     # Future (documented in specs, not yet coded):
-    #   3: node_history / edge_history (TD-009 temporal identity)
-    #   4: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
-    #   5: concepts / concept_edges (concept-ontology-layer)
+    #   4: node_history / edge_history (TD-009 temporal identity)
+    #   5: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
+    #   6: concepts / concept_edges (concept-ontology-layer)
 ]
 LATEST = MIGRATIONS[-1].version
 

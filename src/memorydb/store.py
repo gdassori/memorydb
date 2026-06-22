@@ -23,6 +23,7 @@ class Store:
         # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync per commit
         migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
 
     # --- lifecycle ---------------------------------------------------------

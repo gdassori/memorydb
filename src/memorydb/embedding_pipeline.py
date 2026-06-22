@@ -13,7 +13,7 @@ from . import query as Q
 
 
 class NeighborhoodSerializer(Protocol):
-    def serialize(self, store, node_id: int) -> str: ...
+    def serialize(self, store, node) -> str: ...
 
 
 class DefaultSerializer:
@@ -23,11 +23,15 @@ class DefaultSerializer:
     def __init__(self, cap: int = 25) -> None:
         self.cap = cap  # max neighbors listed per relation (bounds hub fan-out)
 
-    def serialize(self, store, node_id: int) -> str:
-        rows = store.get_nodes([node_id])
-        if not rows:
-            return ""
-        node = rows[0]
+    def serialize(self, store, node) -> str:
+        # `node` may be a node-id (fetch it) or an already-fetched row dict — the pipeline passes the
+        # row it already read via dirty_nodes(), saving one SELECT per node (perf I9).
+        if isinstance(node, int):
+            rows = store.get_nodes([node])
+            if not rows:
+                return ""
+            node = rows[0]
+        node_id = node["id"]
         attrs = node.get("attrs") or {}
         uid = node["uid"]
         path = attrs.get("file_uid") or (uid.split("::")[0] if "::" in uid else None)
@@ -91,8 +95,12 @@ class EmbeddingPipeline:
 
     def _embed_batch(self, batch) -> bool:
         try:
-            texts = [self.serializer.serialize(self.store, n["id"]) for n in batch]
+            texts = [self.serializer.serialize(self.store, n) for n in batch]
             vecs = self.embedder.embed(texts)
+            # Count check FIRST: a short return would otherwise let zip() silently drop the trailing
+            # nodes — they'd be reported embedded yet stay embed_dirty forever (correctness I2).
+            if len(vecs) != len(batch):
+                raise ValueError(f"embedder returned {len(vecs)} vectors for {len(batch)} texts")
             if len({len(v) for v in vecs}) > 1:
                 raise ValueError("embedder returned inconsistent vector dimensions")
             for n, vec in zip(batch, vecs):

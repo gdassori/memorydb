@@ -51,6 +51,9 @@ LANGS: tuple = (
 )
 _BY_EXT = {ext: spec for spec in LANGS for ext in spec.extensions}
 
+_MAX_WALK_DEPTH = 200  # AST nesting cap: stops a hostile deeply-nested file from blowing the recursion
+                       # limit and aborting the whole index (security I1). Far beyond real code nesting.
+
 
 @dataclass
 class Extraction:
@@ -96,11 +99,14 @@ class CodeAdapter:
         rel = os.path.relpath(path, self.repo_root).replace(os.sep, "/")
         with open(path, "rb") as fh:
             data = fh.read()
+        # Guard the whole parse+extract: a hostile or pathological file (e.g. a deeply nested AST that
+        # blows Python's recursion limit) must never abort the index run (security I1). _extract_tree
+        # also depth-caps its own walk.
         try:
             tree = self._parser(spec.name).parse(data)
+            return self._extract_tree(tree.root_node, data, rel, spec)
         except Exception:
-            return Extraction()  # never fail the index on a parse error
-        return self._extract_tree(tree.root_node, data, rel, spec)
+            return Extraction()
 
     # --- parsing -----------------------------------------------------------
     def _parser(self, lang: str):
@@ -113,7 +119,7 @@ class CodeAdapter:
     # --- extraction --------------------------------------------------------
     def _extract_tree(self, root, src: bytes, rel: str, spec: LangSpec) -> Extraction:
         nodes: list = []
-        local: dict = {}            # simple name -> uid (defined in this file)
+        local: dict = {}            # simple name -> [uid, ...] (defs of that name in this file)
         imports: set = set()
         refs: list = []             # (enclosing_uid, callee_name, callee_root, relation)
         seen: set = set()
@@ -125,13 +131,15 @@ class CodeAdapter:
             seen.add(u)
             return u
 
-        def walk(node, stack, enclosing):
+        def walk(node, stack, enclosing, depth=0):
+            if depth > _MAX_WALK_DEPTH:     # bound hostile/pathological nesting (security I1)
+                return
             for child in node.named_children:
                 t = child.type
                 if t in spec.func_types or t in spec.class_types:
                     name = self._name(child, spec)
                     if not name:
-                        walk(child, stack, enclosing)
+                        walk(child, stack, enclosing, depth + 1)
                         continue
                     qual = ".".join(stack + [name])
                     u = uid_for(qual, child.start_byte)
@@ -144,32 +152,36 @@ class CodeAdapter:
                                "start_line": child.start_point[0] + 1,
                                "end_line": child.end_point[0] + 1},
                     ))
-                    local.setdefault(name, u)
+                    local.setdefault(name, []).append(u)
                     if t in spec.class_types:
                         for base in self._base_names(child, src, spec):
                             refs.append((u, base, base, Rel.INHERITS))
-                    walk(child, stack + [name], u)
+                    walk(child, stack + [name], u, depth + 1)
                 elif t in spec.import_types:
                     imports.update(self._import_names(child, src, spec))
-                    walk(child, stack, enclosing)
+                    walk(child, stack, enclosing, depth + 1)
                 elif t in spec.call_types:
                     name, rootname = self._callee(child, spec, src)
                     if name and enclosing:
                         refs.append((enclosing, name, rootname, Rel.CALLS))
-                    walk(child, stack, enclosing)
+                    walk(child, stack, enclosing, depth + 1)
                 else:
-                    walk(child, stack, enclosing)
+                    walk(child, stack, enclosing, depth + 1)
 
         walk(root, [], None)
 
         edges: list = []
         pending: list = []
         for src_uid, name, rootname, relation in refs:
-            if name in local:                                   # same-file: precise-ish
-                edges.append(Edge(src_uid, local[name], relation, confidence=0.9, source="treesitter"))
+            cands = local.get(name, [])
+            if len(cands) == 1:                                 # exactly one same-file def: precise-ish
+                edges.append(Edge(src_uid, cands[0], relation, confidence=0.9, source="treesitter"))
             elif name in imports or rootname in imports:        # import-scoped
                 pending.append((src_uid, name, relation, 0.6))
-            else:                                               # bare global name
+            else:
+                # bare global name, OR an ambiguous same-file name (e.g. a method name on two classes).
+                # Never emit a 0.9 edge to an arbitrarily-chosen def (correctness I6); resolve globally
+                # at low confidence and let the precise resolver settle it.
                 pending.append((src_uid, name, relation, 0.3))
         return Extraction(nodes, edges, pending)
 

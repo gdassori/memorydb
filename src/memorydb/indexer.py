@@ -100,8 +100,14 @@ class Indexer:
         for rel, path, sha in changed:
             self._delete_file(rel)            # drop any prior symbols/file node for this path
             merged = self._extract_all(path)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = None
+            # mtime is the recency signal reused by the FILTER builder / hybrid ranker (C5); sha256
+            # remains the authoritative change check.
             self.store.upsert_node(Node(uid=rel, type="file", name=os.path.basename(rel),
-                                        attrs={"sha256": sha, "lang": merged.lang}))
+                                        attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
             for nd in merged.nodes:
                 self.store.upsert_node(nd)
                 rep.nodes_upserted += 1
@@ -137,6 +143,10 @@ class Indexer:
             dirnames[:] = [d for d in dirnames if not self.ignore.skip_dir(d)]
             for fn in filenames:
                 ap = os.path.join(dirpath, fn)
+                # Skip symlinked files: os.walk already blocks symlinked dirs, but a symlinked file
+                # would otherwise be read through its target — escaping the indexed root (security I5).
+                if os.path.islink(ap):
+                    continue
                 if not self._any_handles(ap) or self.ignore.skip_file(ap):
                     continue
                 out[os.path.relpath(ap, root).replace(os.sep, "/")] = ap
@@ -167,8 +177,10 @@ class Indexer:
 
     def _delete_file(self, rel: str) -> None:
         # Symbols carry attrs.file_uid; deleting them cascades their edges (FK). Then drop the file node.
+        # `file_uid` is the indexed VIRTUAL generated column (migration 3) over attrs.$.file_uid, so this
+        # is an indexed lookup, not a full json_extract scan (perf I8).
         self.store.conn.execute(
-            "DELETE FROM nodes WHERE json_extract(attrs, '$.file_uid') = ? AND type != 'file'", (rel,)
+            "DELETE FROM nodes WHERE file_uid = ? AND type != 'file'", (rel,)
         )
         self.store.conn.execute("DELETE FROM nodes WHERE uid = ? AND type = 'file'", (rel,))
 

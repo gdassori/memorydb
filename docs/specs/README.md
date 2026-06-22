@@ -13,16 +13,16 @@ and the `agentic spec` tooling).
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
 | [v0-substrate](active/v0-substrate.md) | SQLite store, recursive-CTE traversal, brute-force vectors, intent planner | TD-002..007 | active |
-| [code-adapter-treesitter](active/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | planned |
+| [code-adapter-treesitter](active/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | completed |
 | [python-precise-resolver](active/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | planned |
-| [schema-migrations](active/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | planned |
-| [indexer-ingestion-pipeline](active/indexer-ingestion-pipeline.md) | Directory walk, incremental (mtime/hash) re-index, deletions, batching | TD-003, TD-005 | planned |
+| [schema-migrations](active/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | completed |
+| [indexer-ingestion-pipeline](active/indexer-ingestion-pipeline.md) | Directory walk, incremental (mtime/hash) re-index, deletions, batching | TD-003, TD-005 | completed |
 
 ## 2. Embeddings & vectors
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [graph-aware-embedding-pipeline](active/graph-aware-embedding-pipeline.md) | Neighborhood serialization + `embed_dirty`-driven re-embedding | TD-006 | planned |
+| [graph-aware-embedding-pipeline](active/graph-aware-embedding-pipeline.md) | Neighborhood serialization + `embed_dirty`-driven re-embedding | TD-006 | completed |
 | [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md) | `SqliteVecIndex` + `vec0` virtual table behind the `VectorIndex` interface | TD-004 | planned |
 
 ## 3. Retrieval & ranking
@@ -39,7 +39,7 @@ and the `agentic spec` tooling).
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
 | [public-api-facade](active/public-api-facade.md) | Top-level `MemoryDB` class & ergonomic query API | TD-002 | completed |
-| [cli](active/cli.md) | `memorydb index / query / status` command line | — | completed |
+| [cli](active/cli.md) | `memorydb index / query / locate / explain / status / reembed` command line | — | completed |
 | [eval-harness](active/eval-harness.md) | Retrieval-quality benchmarks (LOCATE precision, EXPLAIN relevance) | TD-007 | completed |
 
 ## 5. Second product & deferred (north-star)
