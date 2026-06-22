@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []  # zero-dependency core (TD-004)
 
+[project.scripts]
+memorydb = "memorydb.cli:main"
+
 [project.optional-dependencies]
 vector = ["sqlite-vec>=0.1.0"]            # ANN accelerator (TD-004)
 code = ["tree-sitter>=0.21", "tree-sitter-language-pack>=0.1"]  # multilang AST (TD-005)

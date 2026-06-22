@@ -1,7 +1,8 @@
 ---
 title: "Command-line interface (memorydb)"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-22
 author: claude
 related_tds: [TD-002, TD-004]
 components: [cli, api]
@@ -88,11 +89,27 @@ CLI overhead is negligible; cost is the underlying index/query. `status` is O(1)
 
 ## Tasks
 
-- [ ] `argparse` subparsers (index/query/locate/explain/status/reembed)
-- [ ] human + `--json` renderers (LOCATE rows, EXPLAIN/context, status)
-- [ ] `[project.scripts]` entry point
-- [ ] embedder resolution + default warning
-- [ ] zero-dep in-process tests
+- [x] `argparse` subparsers (index/query/locate/explain/status/reembed)
+- [x] human + `--json` renderers (LOCATE rows, EXPLAIN/context, status)
+- [x] `[project.scripts]` entry point
+- [x] embedder resolution + default warning
+- [x] zero-dep in-process tests
+
+## Implementation notes (2026-06-22)
+
+- `src/memorydb/cli.py` — `main(argv) -> int`; `_Parser(ArgumentParser)` overrides `error()` to exit
+  **1** (usage), runtime errors are caught and exit **2** (no traceback), help/ok exit **0**. Handlers
+  set via `set_defaults(func=...)`; each opens the facade and `close()`s in a `finally`.
+- `--embedder module:attr` resolves a dotted path to an Embedder instance or zero-arg factory; default
+  prints the not-semantic-quality warning to stderr and suppresses the facade's duplicate warning.
+- `--no-embed` rides the new `MemoryDB.index(root, embed=False)`; `reembed [--full]` maps to
+  `refresh_embeddings(full=...)`. `query`/`status`/`locate`/`explain` on an empty store print
+  "no data — run `index`" (exit 0).
+- **Deferred:** `index --include/--exclude` globs are *not* implemented — the Indexer has no glob
+  filtering yet (only `IgnoreMatcher` dir/binary skips). Wire these when the indexer grows globs;
+  omitted from the CLI for now rather than advertising no-op flags.
+- Verified end-to-end against this repo's own `src/` with the real tree-sitter CodeAdapter (15 files →
+  147 symbols / 145 edges; LOCATE + EXPLAIN render correctly).
 
 ## Open questions
 

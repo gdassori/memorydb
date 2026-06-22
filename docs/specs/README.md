@@ -38,8 +38,8 @@ and the `agentic spec` tooling).
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [public-api-facade](active/public-api-facade.md) | Top-level `MemoryDB` class & ergonomic query API | TD-002 | planned |
-| [cli](active/cli.md) | `memorydb index / query / status` command line | — | planned |
+| [public-api-facade](active/public-api-facade.md) | Top-level `MemoryDB` class & ergonomic query API | TD-002 | completed |
+| [cli](active/cli.md) | `memorydb index / query / status` command line | — | completed |
 | [eval-harness](active/eval-harness.md) | Retrieval-quality benchmarks (LOCATE precision, EXPLAIN relevance) | TD-007 | planned |
 
 ## 5. Second product & deferred (north-star)
