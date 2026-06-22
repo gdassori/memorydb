@@ -52,6 +52,18 @@ class Store:
         row = self.conn.execute("SELECT id FROM nodes WHERE uid = ?", (uid,)).fetchone()
         return row[0] if row else None
 
+    # --- meta (key/value substrate metadata; migration 2) ------------------
+    def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+
     # --- writes ------------------------------------------------------------
     def upsert_node(self, node: Node) -> int:
         row = self.conn.execute(

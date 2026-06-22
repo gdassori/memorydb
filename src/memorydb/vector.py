@@ -67,3 +67,15 @@ class SqliteVecIndex:
             "SqliteVecIndex needs the [vector] extra (sqlite-vec). "
             "Use BruteForceVectorIndex until then (TD-004)."
         )
+
+
+def make_vector_index(store):
+    """Best-available ``VectorIndex`` behind one call: the sqlite-vec ANN accelerator when the
+    ``[vector]`` extra is present, else the stdlib brute-force index (TD-004). The facade uses
+    this so callers get acceleration for free once it lands, without changing their code. When
+    ``SqliteVecIndex`` becomes real it will own the dim/``vec0`` setup; until then this degrades
+    cleanly to the exact brute-force scan."""
+    try:
+        return SqliteVecIndex(store)
+    except NotImplementedError:
+        return BruteForceVectorIndex(store)

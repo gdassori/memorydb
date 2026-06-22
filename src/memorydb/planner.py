@@ -44,13 +44,13 @@ class RetrievalPlanner:
     def retrieve(self, query: str, k: int = 5, depth: int = 2) -> dict:
         intent = self.classifier.classify(query)
         if intent is Intent.LOCATE:
-            return self._locate(query)
+            return self.locate(query)
         if intent is Intent.FILTER:
             return {"intent": "FILTER", "note": "FILTER routing is adapter-specific; not in the v0 substrate."}
-        return self._explain(query, k=k, depth=depth)
+        return self.explain(query, k=k, depth=depth)
 
-    # --- intent handlers ---------------------------------------------------
-    def _locate(self, query: str) -> dict:
+    # --- intent handlers (public: the facade routes to these directly) -----
+    def locate(self, query: str) -> dict:
         # Ground the bare query against the index: try each identifier-shaped token and pick the
         # first that actually names a symbol. This drops stopwords ("where"/"used") without a stop
         # list and makes the regex default far less brittle than "take the last token" (TD-007).
@@ -80,7 +80,7 @@ class RetrievalPlanner:
             "by_target": by_target,
         }
 
-    def _explain(self, query: str, k: int, depth: int) -> dict:
+    def explain(self, query: str, k: int = 5, depth: int = 2) -> dict:
         qvec = self.embedder.embed([query])[0]
         seeds = [node_id for _, node_id in self.index.search(qvec, k=k)]
         reached = Q.traverse(self.store, seeds, max_depth=depth, direction="both")

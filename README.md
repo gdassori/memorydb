@@ -31,24 +31,24 @@ The **core has zero third-party dependencies** and runs out of the box
 ## Quickstart
 
 ```python
-from memorydb import Store, Node, Rel, RetrievalPlanner, HashingEmbedder
+from memorydb import MemoryDB
 
-store = Store(":memory:")
-store.upsert_node(Node(uid="send_notification", type="function", name="send_notification",
-                       body="Send a notification to a user via the queue"))
-store.upsert_node(Node(uid="MassNotificationJob", type="function", name="MassNotificationJob",
-                       body="Triggers mass notifications"))
-store.upsert_edge("MassNotificationJob", "send_notification", Rel.CALLS)
+# One facade wires the store, an extractor, the embedder, the indexer and the planner together.
+# Defaults run out of the box; pass embedder=<your model> for production-quality retrieval.
+db = MemoryDB.open("repo.db")            # or ":memory:" for an ephemeral, single-process store
+db.index("~/src/orbital")               # walk -> extract symbols+edges -> graph-aware embeddings
 
-emb = HashingEmbedder()  # swap for your framework's embedder in production
-for uid in ("send_notification", "MassNotificationJob"):
-    nid = store.id_for(uid)
-    store.set_embedding(nid, emb.embed([store.get_nodes([nid])[0]["body"]])[0])
+db.ask("where is send_notification used?")   # -> LOCATE (exact graph, no vectors)
+db.ask("how do notifications work?")         # -> EXPLAIN (vector seed + traversal)
+db.context("how do notifications work?")     # -> token-budgeted, LLM-ready ContextResult
 
-planner = RetrievalPlanner(store, emb)
-planner.retrieve("where is send_notification used?")   # -> LOCATE (exact graph)
-planner.retrieve("how do notifications work?")         # -> EXPLAIN (vector seed + traversal)
+db.locate("send_notification")               # exact references list
+db.store, db.planner                         # escape hatches to the raw substrate (TD-002)
 ```
+
+Every port is overridable — `MemoryDB.open(path, embedder=…, extractors=…, classifier=…,
+vector_index=…)` — and the lower-level `Store` / `RetrievalPlanner` / `Indexer` remain importable
+for direct use.
 
 ## Status
 
