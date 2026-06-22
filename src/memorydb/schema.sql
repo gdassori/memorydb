@@ -1,7 +1,7 @@
--- MemoryDB substrate schema (TD-003). One SQLite DB holds relational + graph + vectors.
+-- MemoryDB substrate schema (TD-003) — the baseline applied by migration 1 (schema-migrations spec).
 -- Metadata columns (source/valid_from/valid_to/confidence) are present but mostly unused in v0 (TD-008).
-
-PRAGMA journal_mode = WAL;
+-- Connection pragmas (foreign_keys, journal_mode) are set by Store.__init__, not here, so this file is
+-- pure DDL that the migration runner can apply statement-by-statement inside a transaction.
 
 CREATE TABLE IF NOT EXISTS nodes (
     id          INTEGER PRIMARY KEY,

@@ -1,6 +1,6 @@
 ---
 title: "Schema versioning & forward migrations"
-status: planned
+status: active
 created: 2026-06-22
 author: claude
 related_tds: [TD-003]
@@ -117,10 +117,13 @@ new column) should be batched and are noted per-migration; none required for the
 
 ## Tasks
 
-- [ ] `migrations.py` with `migrate()` + baseline migration 1 (= schema.sql)
-- [ ] switch `Store.__init__` to `migrate()`
-- [ ] `extension_available()` helper + idempotent vec0 "ensure" pattern
-- [ ] zero-dep tests (fresh / upgrade / reject-newer / rollback)
+- [x] `migrations.py` with `migrate()` + baseline migration 1 (= `schema.sql`, applied statement-by-statement)
+- [x] migration 2 = `meta(key, value)` table (home for the embedding dim, C3)
+- [x] switch `Store.__init__` to `migrate()`; move `journal_mode`/`foreign_keys` pragmas into `Store`
+- [x] explicit per-migration `BEGIN` (Python sqlite3 does not auto-open a transaction for DDL)
+- [x] zero-dep tests (fresh / upgrade-from-v0 / reject-newer / partial-failure-rollback / reopen / contiguity) — 6 green
+- [ ] `extension_available()` helper + idempotent vec0 "ensure" migration (with [sqlite-vec-acceleration.md](sqlite-vec-acceleration.md))
+- [ ] `node_history` / `edge_history` migration ([TD-009](../../decisions/TD-009-versioned-identity-for-temporal-history.md))
 
 ## Open questions
 

@@ -9,21 +9,21 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Optional, Sequence
 
+from .migrations import migrate
 from .models import Node
 from .vector import pack
-
-_SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
 class Store:
     def __init__(self, path: str = ":memory:") -> None:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(_SCHEMA)
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
 
     # --- lifecycle ---------------------------------------------------------
     def close(self) -> None:
