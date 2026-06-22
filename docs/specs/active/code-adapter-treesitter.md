@@ -1,6 +1,6 @@
 ---
 title: "CodeAdapter — multilang symbol & coarse-edge extraction via tree-sitter"
-status: planned
+status: active
 created: 2026-06-22
 author: claude
 related_tds: [TD-005, TD-002, TD-006]
@@ -121,12 +121,18 @@ opt-in per language.
 
 ## Tasks
 
-- [ ] `LanguageRegistry` + `LanguageSpec` + extension map (python, go, rust, js, ts, java, c, cpp)
-- [ ] `.scm` symbol & ref queries for the first 3 languages (python, go, js)
-- [ ] `CodeAdapter.extract`: parse → nodes → symbol table/import map → resolution-tier edges
-- [ ] uid scheme + collision suffixing (shared with the precise resolver)
-- [ ] attrs (signature/docstring/span) extraction per language
-- [ ] zero-dep resolution-tier unit test + [code]-extra parse tests
+- [x] `LanguageRegistry` + `LangSpec` + extension map (python, javascript, typescript, go, rust)
+- [x] `CodeAdapter.extract` → `Extraction(nodes, edges, pending)`: parse → field-based tree walk → local symbol table + import set → resolution-tier edges (0.9 in-file / 0.6 import-scoped pending / 0.3 bare-name pending)
+- [x] uid scheme `relpath::qualname` + deterministic `#startbyte` collision suffix (shared with the precise resolver)
+- [x] attrs (lang, signature, docstring, start/end line, `file_uid`) — docstring handles the bare-`string` and `expression_statement`-wrapped grammars
+- [x] [code]-extra tests: registry, python nodes/edges/inheritance/pending, unsupported-skip, JS smoke — 6 green
+- [ ] add java / c / cpp specs; richer call-receiver typing; optional `.scm` query path
+- [ ] zero-dep unit test of the resolution-tier function in isolation (currently exercised via the adapter, which needs the extra)
+
+> **Impl notes (2026-06-22):** used a **field-based manual tree walk** (stable across tree-sitter
+> versions) instead of `.scm` queries; built parsers via `tree_sitter.Parser(get_language(name))`
+> because `tree_sitter_language_pack.get_parser` ships a broken parser binding (its `parse` rejects
+> `bytes`). Returns an `Extraction` (not a bare tuple) so the indexer gets the **pending** edges (C2).
 
 ## Open questions
 
