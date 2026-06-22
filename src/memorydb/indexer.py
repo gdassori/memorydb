@@ -77,8 +77,14 @@ class Indexer:
         existing = self._existing_files()
         rep.files_seen = len(disk)
 
+        # Names added or removed this run — the callers referencing these by name must be re-resolved,
+        # even if their own files didn't change (this is what rebuilds a cross-file edge after its
+        # callee file is edited — R3L-1).
+        affected_names: set = set()
+
         # Deletions: a file node exists but the file is gone.
         for rel in set(existing) - set(disk):
+            affected_names |= self._symbol_names_of(rel)
             self._delete_file(rel)
             rep.files_deleted += 1
 
@@ -98,6 +104,7 @@ class Indexer:
         # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
         deferred = []
         for rel, path, sha in changed:
+            affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
             self._delete_file(rel)            # drop any prior symbols/file node for this path
             merged = self._extract_all(path)
             try:
@@ -110,24 +117,32 @@ class Indexer:
                                         attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
             for nd in merged.nodes:
                 self.store.upsert_node(nd)
+                affected_names.add(nd.name)   # names this file now defines
                 rep.nodes_upserted += 1
             deferred.append((rel, merged))
             rep.files_indexed += 1
         self.store.commit()
 
-        # PASS 2 — edges (in-file, dst is a uid) + pending (by-name, resolved globally, C2).
+        # PASS 2 — in-file precise edges (dst is already a uid) now; by-name edges are persisted to
+        # pending_edges (C2) and resolved in one global pass below.
+        changed_rels: set = set()
         for rel, merged in deferred:
+            changed_rels.add(rel)
             for e in merged.edges:
                 if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
                     rep.edges_upserted += 1
                 else:
                     rep.edges_unresolved += 1
             for (src_uid, dst_name, relation, conf) in merged.pending:
-                targets = self._resolve_name(dst_name)
-                if len(targets) == 1 and self._safe_edge(src_uid, targets[0], relation, conf, "treesitter"):
-                    rep.edges_upserted += 1
-                else:
-                    rep.edges_unresolved += 1   # unknown or ambiguous name
+                self._persist_pending(src_uid, rel, dst_name, relation, conf)
+        self.store.commit()
+
+        # Resolve every pending edge that could have changed this run: emitted by a (re)indexed file,
+        # OR (in any unchanged file) targeting a name that just appeared/disappeared. The second case
+        # is what restores a caller's cross-file edge after its callee file was edited (R3L-1).
+        up, un = self._resolve_pending(changed_rels, affected_names)
+        rep.edges_upserted += up
+        rep.edges_unresolved += un
         self.store.commit()
 
         # Embeddings (graph-aware, TD-006): only the dirty nodes.
@@ -176,6 +191,16 @@ class Indexer:
         return out
 
     def _delete_file(self, rel: str) -> None:
+        # Dirty the surviving node on the far end of each edge this file's symbols touch — their
+        # serialized neighborhood (TD-006) changes when the symbol disappears, else their embedding is
+        # silently stale. Must run BEFORE the delete cascades those edges away (R3L-3).
+        self.store.conn.execute(
+            "UPDATE nodes SET embed_dirty = 1 WHERE id IN ("
+            "  SELECT e.dst FROM edges e JOIN nodes s ON s.id = e.src WHERE s.file_uid = ? AND s.type != 'file' "
+            "  UNION "
+            "  SELECT e.src FROM edges e JOIN nodes d ON d.id = e.dst WHERE d.file_uid = ? AND d.type != 'file')",
+            (rel, rel),
+        )
         # Symbols carry attrs.file_uid; deleting them cascades their edges (FK). Then drop the file node.
         # `file_uid` is the indexed VIRTUAL generated column (migration 3) over attrs.$.file_uid, so this
         # is an indexed lookup, not a full json_extract scan (perf I8).
@@ -183,6 +208,53 @@ class Indexer:
             "DELETE FROM nodes WHERE file_uid = ? AND type != 'file'", (rel,)
         )
         self.store.conn.execute("DELETE FROM nodes WHERE uid = ? AND type = 'file'", (rel,))
+        # Drop this file's pending edges; they are re-emitted if/when the file is re-indexed (R3L-1).
+        self.store.conn.execute("DELETE FROM pending_edges WHERE src_file = ?", (rel,))
+
+    def _symbol_names_of(self, rel: str) -> set:
+        rows = self.store.conn.execute(
+            "SELECT DISTINCT name FROM nodes WHERE file_uid = ? AND type != 'file'", (rel,)
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence) -> None:
+        self.store.conn.execute(
+            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence) "
+            "VALUES(?, ?, ?, ?, ?) "
+            "ON CONFLICT(src_uid, dst_name, relation) DO UPDATE SET "
+            "  src_file = excluded.src_file, "
+            "  confidence = MAX(pending_edges.confidence, excluded.confidence)",
+            (src_uid, src_file, dst_name, relation, confidence),
+        )
+
+    def _resolve_pending(self, changed_rels: set, affected_names: set):
+        """Resolve the candidate pending rows by name; returns (upserted, unresolved). Candidates are
+        rows from a (re)indexed file OR rows whose target name changed this run. Unique name match →
+        edge (MAX-confidence upsert); ambiguous/unknown → left pending for a future run."""
+        clauses, params = [], []
+        if changed_rels:
+            clauses.append("src_file IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(sorted(changed_rels)))
+        if affected_names:
+            clauses.append("dst_name IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(sorted(affected_names)))
+        if not clauses:
+            return 0, 0
+        rows = self.store.conn.execute(
+            "SELECT src_uid, dst_name, relation, confidence FROM pending_edges WHERE "
+            + " OR ".join(clauses),
+            params,
+        ).fetchall()
+        up = un = 0
+        for r in rows:
+            targets = self._resolve_name(r["dst_name"])
+            if len(targets) == 1 and self._safe_edge(
+                r["src_uid"], targets[0], r["relation"], r["confidence"], "treesitter"
+            ):
+                up += 1
+            else:
+                un += 1
+        return up, un
 
     def _resolve_name(self, name: str) -> list:
         rows = self.store.conn.execute(

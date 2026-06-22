@@ -43,16 +43,19 @@ class BruteForceVectorIndex:
         q = list(query_vec)
         q_norm = math.sqrt(sum(x * x for x in q)) or 1.0
         # Push the type filter into SQL so we don't unpack vectors we'd discard (perf I7).
-        sql = ("SELECT e.node_id AS node_id, e.vector AS vector "
+        sql = ("SELECT e.node_id AS node_id, e.vector AS vector, n.uid AS uid "
                "FROM embeddings e JOIN nodes n ON n.id = e.node_id")
         params: list = []
         if types:
             sql += " WHERE n.type IN (%s)" % ",".join("?" for _ in types)
             params = list(types)
         rows = self.store.conn.execute(sql, params).fetchall()
-        scored = [(_cosine(q, q_norm, unpack(r["vector"])), r["node_id"]) for r in rows]
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return scored[: max(0, k)]  # clamp: a negative k must not slice off the tail (I13)
+        scored = [(_cosine(q, q_norm, unpack(r["vector"])), r["node_id"], r["uid"]) for r in rows]
+        # Tiebreak on uid (not score alone, and not node_id which churns when the indexer re-inserts
+        # nodes): equal-score results are otherwise ordered by SQLite's unspecified row order, making
+        # top-k seeds and EXPLAIN ranking non-deterministic (R3L-4).
+        scored.sort(key=lambda t: (-t[0], t[2]))
+        return [(s, nid) for s, nid, _uid in scored[: max(0, k)]]  # clamp negative k to empty (I13)
 
 
 class SqliteVecIndex:

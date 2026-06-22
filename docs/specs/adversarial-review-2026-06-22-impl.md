@@ -13,7 +13,7 @@ Severities: **Critical** (data loss / contract break), **High**, **Medium**, **L
 |----|-----|------|----------|-------|--------|
 | I1 | High | security/DoS | adapters/code/__init__.py:103,128 | Hostile deeply-nested source → uncaught `RecursionError` (`_extract_tree` is called *outside* `extract`'s try/except) aborts the whole index run | **fixed** |
 | I2 | High | correctness | embedding_pipeline.py:92-102 | `_embed_batch` never checks `len(vecs)==len(batch)`; an embedder returning fewer vectors silently drops trailing nodes, marks them embedded, leaves them `embed_dirty=1` forever | **fixed** |
-| I3 | High | correctness/incremental | indexer.py:98-125 | Cross-file *pending* edges only resolve when the **caller** file is re-extracted; if the callee appears/reappears in another (unchanged) file, the edge is permanently missing | **deferred** (needs design) |
+| I3 | High | correctness/incremental | indexer.py:98-125 | Cross-file *pending* edges only resolve when the **caller** file is re-extracted; if the callee appears/reappears in another (unchanged) file, the edge is permanently missing | **fixed** in round 3 → see R3L-1 |
 | I4 | High | spec-adherence | vector.py:78-81 | C7 (`enable_load_extension` detection) marked resolved in the ledger but `make_vector_index` catches only `NotImplementedError` | **fixed** (broadened except) |
 | I5 | Med | security | indexer.py:134-143,89 | Symlinked *files* are read outside the indexed root (info disclosure); `os.walk` only blocks symlinked dirs | **fixed** |
 | I6 | Med | correctness | adapters/code/__init__.py:147,167 | Flat `local` name→uid map (first-wins) resolves same-name methods across classes to the wrong class at **confidence 0.9** | **fixed** (ambiguous → pending) |
@@ -40,13 +40,29 @@ documented trust assumption).
 
 ## Deferred items — rationale
 
-- **I3 (cross-file pending re-resolution):** the correct fix persists unresolved pending edges in a table and
-  retries them whenever symbol names appear/disappear — a real feature touching schema + indexer. Tracked as a
-  follow-up task on [indexer-ingestion-pipeline](active/indexer-ingestion-pipeline.md); **note the upcoming
-  [python-precise-resolver](active/python-precise-resolver.md) builds a global def table and can subsume this.**
+- **I3 (cross-file pending re-resolution):** ~~deferred~~ **fixed in round 3 (R3L-1)** — a persisted
+  `pending_edges` table (migration 4) + name-keyed re-resolution in the indexer. See the round-3 section below.
 - **I7/I14 vector overhaul:** TD-004 accepts brute-force O(n) for v0; pre-normalised vectors + ANN are the job of
   [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md). Cheap algorithmic wins applied now.
 - **I17 traverse cap:** fan-out budgeting belongs with [hybrid-ranker](active/hybrid-ranker.md) /
   [context-builder-packing](active/context-builder-packing.md).
 - **I15 file-node embedding:** excluding `type='file'` nodes needs a dirty-flag policy (else they re-try forever);
   deferred as a deliberate decision, not a quick patch.
+
+---
+
+# Round 3 (2026-06-22, light) — multi-agent: 3 lenses → 1 skeptic/finding
+
+A lighter follow-up pass (workflow: 3 finder lenses → 1 adversarial skeptic per finding → synthesis).
+4 candidates raised, **all 4 survived refutation and were independently reproduced**. All fixed.
+
+| ID | Sev | Issue | Location | Status |
+|----|-----|-------|----------|--------|
+| R3L-1 | High | Editing a *callee* file cascade-deletes the cross-file CALLS edge and the unchanged caller never re-resolves it → silent LOCATE/EXPLAIN corruption on the everyday edit-a-callee case (sharper restatement of I3) | indexer.py + schema | **fixed** — migration 4 `pending_edges` (durable by-name edges) + `_resolve_pending(changed_rels, affected_names)`: re-resolves any pending whose target NAME appeared/disappeared this run, in any file. `_delete_file` clears a file's pending; pending survive a callee delete so the edge rebuilds when it returns. |
+| R3L-2 | High | `traverse(direction="both")` joined a `src..UNION ALL..dst` subquery → SQLite couldn't push the working-set id into `idx_edges_src/dst`, materializing the whole edge table per default EXPLAIN/ask query (measured 409 ms @200k edges; index-defeat independent of neighborhood size) | query.py:_EDGE_VIEW / traverse | **fixed** — `_recursive_branches()` emits two parallel indexed recursive terms for "both" (`JOIN edges e ON e.src=r.id` UNION `ON e.dst=r.id`). EXPLAIN QUERY PLAN now shows SEARCH … USING INDEX; result-identical (tested). |
+| R3L-3 | Medium | Node delete (cascade) didn't set `embed_dirty` on the surviving neighbor → its serialized neighborhood (TD-006) goes stale and is never re-embedded | store/indexer `_delete_file` | **fixed** — `_delete_file` UPDATEs `embed_dirty=1` on the far endpoint of each affected edge before the cascade fires. |
+| R3L-4 | Low | `BruteForceVectorIndex.search` sorted by score only → ties broken by SQLite row order (and node-id churns on re-index) → non-deterministic top-k seeds / flaky eval metrics | vector.py / eval `_explain_ranking` | **fixed** — tiebreak on the churn-invariant `uid` (`sort key=(-score, uid)`); `_explain_ranking` orders the remainder by uid too. |
+
+Regression tests: `tests/test_review_r3.py` (6, incl. a faithful real-Python R3L-1 repro and an EXPLAIN-QUERY-PLAN check for R3L-2). Suite green (66).
+
+Net: the round-3 fixes close the last High-severity data-integrity gap (I3/R3L-1) and a linear-in-repo-size latency cliff (R3L-2). Remaining deferred: I7/I14 (vector pre-norm/ANN → sqlite-vec), I15 (file-node embedding policy), I17 (traverse hub fan-out cap → ranker/context-builder).

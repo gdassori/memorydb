@@ -11,16 +11,23 @@ from __future__ import annotations
 import json
 from typing import Optional, Sequence
 
-# Each direction is expressed as a normalized (a -> b) edge view so the recursive CTE's
-# recursive term is always a single simple SELECT (portable across SQLite versions).
-_EDGE_VIEW = {
-    "out": "SELECT src AS a, dst AS b, relation AS rel FROM edges",
-    "in": "SELECT dst AS a, src AS b, relation AS rel FROM edges",
-    "both": (
-        "SELECT src AS a, dst AS b, relation AS rel FROM edges "
-        "UNION ALL SELECT dst AS a, src AS b, relation AS rel FROM edges"
-    ),
-}
+# Each direction is one or more recursive branches that join `edges` directly on an indexed column
+# (edges.src / edges.dst) — so SQLite uses idx_edges_src/idx_edges_dst. The earlier "both" form was a
+# single join over a `src..UNION ALL..dst` subquery, which SQLite can't push the working-set id into,
+# forcing a full edge-table materialization per query (perf R3L-2). Two parallel indexed branches are
+# result-identical and index-using.
+def _recursive_branches(direction: str, rel_clause: str) -> str:
+    out = (f"SELECT e.dst, r.depth + 1 FROM reach r JOIN edges e ON e.src = r.id "
+           f"WHERE r.depth < :max_depth{rel_clause}")
+    inb = (f"SELECT e.src, r.depth + 1 FROM reach r JOIN edges e ON e.dst = r.id "
+           f"WHERE r.depth < :max_depth{rel_clause}")
+    if direction == "out":
+        return out
+    if direction == "in":
+        return inb
+    if direction == "both":
+        return f"{out} UNION {inb}"
+    raise ValueError(f"unknown direction: {direction!r}")
 
 
 def vector_search(index, query_vec, k: int = 10, types: Optional[Sequence[str]] = None):
@@ -48,14 +55,12 @@ def traverse(
     rel_clause = ""
     if relations:
         params["rels"] = json.dumps(list(relations))
-        rel_clause = " AND e.rel IN (SELECT value FROM json_each(:rels))"
-    edge_view = _EDGE_VIEW[direction]
+        rel_clause = " AND e.relation IN (SELECT value FROM json_each(:rels))"
     sql = (
         "WITH RECURSIVE reach(id, depth) AS ( "
         "  SELECT value, 0 FROM json_each(:seeds) "
         "  UNION "
-        f"  SELECT e.b, r.depth + 1 FROM reach r JOIN ({edge_view}) e ON e.a = r.id "
-        f"  WHERE r.depth < :max_depth{rel_clause} "
+        f"  {_recursive_branches(direction, rel_clause)} "
         ") SELECT id, MIN(depth) AS depth FROM reach GROUP BY id ORDER BY depth, id"
     )
     return [dict(r) for r in store.conn.execute(sql, params).fetchall()]

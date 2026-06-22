@@ -165,7 +165,9 @@ class Evaluator:
         by_id = {n["id"]: n["uid"] for n in result.get("nodes", [])}
         seeds = [by_id[i] for i in result.get("seeds", []) if i in by_id]
         seen = set(seeds)
-        rest = [by_id[i] for i in sorted(by_id) if by_id[i] not in seen]
+        # Order the non-seed remainder by uid (churn-invariant), not by node id which the indexer's
+        # delete+reinsert renumbers — keeps the ranking deterministic across re-index (R3L-4).
+        rest = sorted(uid for uid in by_id.values() if uid not in seen)
         return _dedupe(seeds + rest)
 
     def _broken(self, c) -> bool:
