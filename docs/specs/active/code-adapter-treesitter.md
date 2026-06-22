@@ -141,6 +141,18 @@ opt-in per language.
   resolvers + never treating <0.9 edges as exact in LOCATE ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)).
 - **Grammar/version drift** in tree-sitter-language-pack → pin the version in the `[code]` extra.
 
+## Review remediation (2026-06-22)
+
+- **Unresolved (global-name) edges (C2):** `extract()` cannot emit an `Edge` to a name it can't resolve in-file,
+  because `Edge.dst` is a uid and `Store.upsert_edge` raises on a missing endpoint (verified). So the **0.3
+  global-name tier is NOT returned as an `Edge`**; the adapter returns it as a **pending edge**
+  `(src_uid, dst_name, relation, confidence)` that the [indexer](indexer-ingestion-pipeline.md) resolves against the
+  global symbol table in pass 2 (kept-low or dropped if still unresolved).
+- **Stable uids for overloads:** assign the `#N` disambiguation suffix by a **deterministic key** (start byte
+  offset), not parse iteration order, so a re-parse yields the same uid and the indexer doesn't churn/duplicate.
+- **file linkage:** stamp `attrs.file_uid` (and the file's `mtime`/`lang`) on every symbol so FILTER and the ranker
+  have a standard join key (C5).
+
 ## References
 
 - [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)

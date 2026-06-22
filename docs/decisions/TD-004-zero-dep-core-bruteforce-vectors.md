@@ -27,6 +27,14 @@ The package **runs and passes its tests out of the box** with no installs — th
 - **Positive:** no install friction, no native build to ship a working v0; trivial to test with fakes; honest performance story (exact now, accelerated later).
 - **Negative:** brute force is O(n) per query — fine to ~10⁵ vectors. Beyond that, install the `[vector]` extra and switch to the `sqlite-vec` index.
 
+## Review note (2026-06-22)
+
+Two honest caveats from review: (1) `BruteForceVectorIndex` recomputes each vector's L2 norm on every query —
+precompute/store norms (or store normalized vectors) when this shows up in a profile; (2) the ~10⁵-vector
+ceiling is an estimate, **not benchmarked** — the eval harness ([eval-harness.md](../specs/active/eval-harness.md))
+should measure the real brute-force→`sqlite-vec` crossover. Note also that `make_vector_index` must keep the
+**cosine** metric consistent across both backends ([sqlite-vec-acceleration.md](../specs/active/sqlite-vec-acceleration.md)).
+
 ## Alternatives Considered
 
 ### Hard-depend on sqlite-vec from day one

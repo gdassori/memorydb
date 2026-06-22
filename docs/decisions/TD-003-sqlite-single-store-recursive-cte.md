@@ -27,6 +27,13 @@ Embedded, single-file, durable, and every modality is **joinable in one query** 
 - **Positive:** zero-ops, one file to back up; cross-modal joins are trivial; recursive CTE covers moderate-depth traversal well.
 - **Negative:** very deep or very dense traversals can be slow in pure CTE. Mitigate with depth bounds, relation filters, and pulling the subgraph into NetworkX for heavier algorithms.
 
+## Review note (2026-06-22)
+
+Recursive-CTE traversal was verified to terminate on cyclic graphs (the `UNION` dedups reachable nodes). To
+keep "NetworkX is never the source of truth" unambiguous: any PageRank/centrality scores cached back onto nodes
+are **derived and rebuildable** from the edges table, never authoritative
+([graph-algorithms-networkx.md](../specs/active/graph-algorithms-networkx.md)).
+
 ## Alternatives Considered
 
 ### Neo4j (or another graph server) for the graph

@@ -79,11 +79,16 @@ class Store:
         d = self.id_for(dst_uid)
         if s is None or d is None:
             raise KeyError(f"edge endpoints must both exist: {src_uid!r} -> {dst_uid!r}")
+        # Monotonic confidence: a re-upsert never LOWERS confidence, and weight/source follow the
+        # higher-confidence claim. This lets a precise extractor (TD-005) supersede a coarse edge
+        # without a later coarse pass downgrading it. `edges` = existing row, `excluded` = new row.
         self.conn.execute(
             "INSERT INTO edges(src, dst, relation, weight, confidence, source) "
             "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src, dst, relation) DO UPDATE SET "
-            "  weight=excluded.weight, confidence=excluded.confidence, source=excluded.source",
+            "  weight  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.weight ELSE edges.weight END, "
+            "  source  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.source ELSE edges.source END, "
+            "  confidence = MAX(edges.confidence, excluded.confidence)",
             (s, d, relation, weight, confidence, source),
         )
         # Graph-aware embedding staleness (TD-006): both endpoints' neighborhoods changed.

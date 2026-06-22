@@ -135,6 +135,17 @@ new column) should be batched and are noted per-migration; none required for the
   `IF NOT EXISTS` DDL.
 - **Forgetting to bump `LATEST`** when adding a migration → assert contiguity of versions in a test.
 
+## Review remediation (2026-06-22)
+
+- **vec0 dimension (C3):** do **not** create `vec_items` in a static migration with a hardcoded `float[768]` — the
+  embedding dim is unknown at `Store.__init__`. Persist the chosen dim in a `meta(key, value)` table and create
+  `vec_items` **lazily on first `set_embedding`** ([sqlite-vec-acceleration.md](sqlite-vec-acceleration.md)). The vec0
+  migration becomes an idempotent "ensure" that no-ops until both the extension and a known dim are present.
+- **Temporal tables (TD-009):** a later migration adds `node_history` / `edge_history`; current rows keep
+  `uid UNIQUE` per [TD-009](../../decisions/TD-009-versioned-identity-for-temporal-history.md).
+- **Test fix:** a real v0 DB has `user_version = 0` (not 1); the upgrade test starts from 0, and migration 1 must be
+  safe to re-run over an existing v0 schema via `CREATE TABLE IF NOT EXISTS`.
+
 ## References
 
 - [TD-003](../../decisions/TD-003-sqlite-single-store-recursive-cte.md)

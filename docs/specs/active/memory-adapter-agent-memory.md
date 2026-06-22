@@ -110,6 +110,14 @@ stores benefit from the deferred machinery (decay, compaction) to avoid unbounde
 - **Unbounded growth** of episodic memory → needs compaction/decay ([temporal-confidence-machinery.md](temporal-confidence-machinery.md))
   and concepts ([concept-ontology-layer.md](concept-ontology-layer.md)) to summarize; flagged, not solved here.
 
+## Review remediation (2026-06-22)
+
+- **Contradictions (C1):** "keep both with time/confidence" uses the temporal **history model** from
+  [TD-009](../../decisions/TD-009-versioned-identity-for-temporal-history.md) — a superseded fact moves to
+  `node_history` while the live row holds the current truth — **not** duplicate uids (which the schema forbids).
+- **Single entity path:** route both `entity()` and `remember(entities=...)` through one idempotent upsert keyed on a
+  normalized name, to avoid the two-path duplication risk.
+
 ## References
 
 - [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md), [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md)

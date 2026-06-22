@@ -123,6 +123,13 @@ op; the heuristic is O(len). Real tokenizers are pluggable when exactness matter
 - **Heuristic token count drift** vs the real model → allow injecting the model's tokenizer; keep a safety margin.
 - **Over-packing relationships** crowding out cards → the reserve cap bounds it.
 
+## Review remediation (2026-06-22)
+
+The `chars/4` heuristic **under-counts** punctuation-dense code, risking budget overruns. Apply a **safety margin**
+(pack to `budget × 0.9`), expose the model's real tokenizer via the `TokenCounter` port, and always report
+`used_tokens` so an overrun is visible rather than silent. Provenance (`file:line`) is derived from the uid prefix +
+`attrs.start_line`, which the code adapter guarantees.
+
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)

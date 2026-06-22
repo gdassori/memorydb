@@ -104,6 +104,20 @@ jobs (off the query path), ideally run by the reflection daemon. History growth 
 - **Write tax** on every fact (supersede instead of update) → only agent-memory uses it; code path stays simple.
 - **Clock/timezone bugs** → enforce UTC ISO-8601; pass time in (never `Date.now()` in core logic).
 
+## Review remediation (2026-06-22)
+
+**Corrected by [TD-009](../../decisions/TD-009-versioned-identity-for-temporal-history.md) — the §"supersede" above
+cannot work as written:** `nodes.uid` is `UNIQUE` (verified: a duplicate-uid insert raises `IntegrityError`), so you
+cannot keep two time-versions under the same uid. Instead:
+
+- **supersede(uid, new, at):** in one transaction, copy the current `nodes` row into **`node_history`** with
+  `valid_to = at`, then **UPDATE the live row in place** (`valid_from = at`, `valid_to = NULL`). The live `nodes` row
+  keeps its UNIQUE uid.
+- **as_of(t):** the live row when `valid_from <= t`, else the `node_history` row whose `[valid_from, valid_to)`
+  contains `t` (union live + history).
+- `decay_confidence` / `prune` operate on **facts only** and skip structural code edges. The interface signatures above
+  stand; only the storage mechanism changes (history table, not duplicate uids).
+
 ## References
 
 - [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md), [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)

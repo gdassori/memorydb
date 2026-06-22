@@ -136,6 +136,13 @@ the global def table (one row per symbol). Comfortable to tens of thousands of P
   guesses; coarse edges still cover the gap at low confidence.
 - **uid drift** vs the tree-sitter adapter would break supersession → enforce one shared uid function in code.
 
+## Review remediation (2026-06-22)
+
+Supersession is now backed by the store: `upsert_edge` keeps **`confidence = MAX(old, new)`** and lets weight/source
+follow the higher-confidence claim (implemented + tested). So the resolver simply emits edges at its true confidence
+(0.95–1.0) and relies on this **monotonic merge** — running it after the coarse tree-sitter pass upgrades edges, and a
+later coarse pass can no longer downgrade a precise edge. Ordering between passes is therefore not load-bearing.
+
 ## References
 
 - [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)

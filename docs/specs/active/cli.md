@@ -103,6 +103,12 @@ CLI overhead is negligible; cost is the underlying index/query. `status` is O(1)
 
 - **Putting logic in the CLI** instead of the facade → keep `cli.py` to parsing + rendering only.
 
+## Review remediation (2026-06-22)
+
+**Default alignment:** the CLI persists by default (`--db ./memorydb.sqlite`) while `MemoryDB.open()` defaults to
+`:memory:`. This divergence is intentional (a CLI invocation should keep its index) but must be **documented** in
+`--help` so it isn't surprising; `query`/`status` on a missing DB print "no data, run `index`" rather than erroring.
+
 ## References
 
 - [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md), [TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)

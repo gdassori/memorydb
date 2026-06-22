@@ -112,6 +112,13 @@ are opt-in and may use a real embedder.
 - **Overfitting weights to the sample suite** → keep suites diverse; report per-case, not just aggregates.
 - **Stale labels** silently inflating/deflating scores → the broken-case detector + a label lint step.
 
+## Review remediation (2026-06-22)
+
+**Build-order:** this harness is the *only* validator for the TD-005 confidence tiers and the hybrid-ranker weights,
+which several specs lean on. Pull it **earlier** — right after the indexer and a basic retrieval path — so those
+values aren't "asserted but unvalidated" for long. Report LOCATE precision **split by confidence threshold** (≥0.9 vs
+all) to expose coarse-edge false positives ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)).
+
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)

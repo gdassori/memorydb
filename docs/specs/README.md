@@ -57,3 +57,12 @@ and the `agentic spec` tooling).
 graph-aware-embedding-pipeline → public-api-facade → cli → (sqlite-vec-acceleration, python-precise-resolver) →
 llm-intent-classifier → graph-algorithms-networkx → hybrid-ranker → context-builder-packing → eval-harness →
 memory-adapter-agent-memory → concept-ontology-layer → temporal-confidence-machinery → reflection-daemon.
+
+## Review status (2026-06-22)
+
+All findings from [adversarial-review-2026-06-22.md](adversarial-review-2026-06-22.md) are remediated in-doc (every
+affected spec carries a dated **Review remediation** section; the v0 code fixes are implemented + tested). Added
+[TD-009](../decisions/TD-009-versioned-identity-for-temporal-history.md) (versioned identity) to unblock the temporal
+track. **Revised build order:** pull **eval-harness earlier** — right after `public-api-facade` / `cli` — so the
+confidence tiers (TD-005) and ranker weights are validated before later specs depend on them; the temporal track
+(`temporal-confidence-machinery` → `reflection-daemon`) now follows TD-009.

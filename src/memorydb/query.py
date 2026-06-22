@@ -78,6 +78,27 @@ def references_to(store, name: str) -> list[dict]:
     return [dict(r) for r in store.conn.execute(sql, {"n": name}).fetchall()]
 
 
+def node_neighborhood(store, node_id: int) -> dict:
+    """Incoming + outgoing edges of one node, with neighbor uid/name/relation/confidence.
+
+    The unit the graph-aware embedding serializer (TD-006) turns into text, and a building block
+    for LOCATE/EXPLAIN. Returns ``{"out": [...], "in": [...]}`` sorted for determinism.
+    """
+    out = store.conn.execute(
+        "SELECT e.relation AS relation, e.confidence AS confidence, n.uid AS uid, n.name AS name "
+        "FROM edges e JOIN nodes n ON n.id = e.dst WHERE e.src = :id "
+        "ORDER BY e.relation, n.name",
+        {"id": int(node_id)},
+    ).fetchall()
+    inc = store.conn.execute(
+        "SELECT e.relation AS relation, e.confidence AS confidence, n.uid AS uid, n.name AS name "
+        "FROM edges e JOIN nodes n ON n.id = e.src WHERE e.dst = :id "
+        "ORDER BY e.relation, n.name",
+        {"id": int(node_id)},
+    ).fetchall()
+    return {"out": [dict(r) for r in out], "in": [dict(r) for r in inc]}
+
+
 def subgraph_edges(store, node_ids: Sequence[int]) -> list[dict]:
     """All edges whose both endpoints are within ``node_ids`` (the induced subgraph)."""
     if not node_ids:

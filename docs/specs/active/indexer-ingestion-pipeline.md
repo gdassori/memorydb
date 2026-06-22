@@ -127,6 +127,20 @@ to tens of thousands of files for an embedded use case.
 - **Cascade deletes too much** if `file --DECLARES--> symbol` edges are wrong → test the cascade explicitly.
 - **Hash thrash** on files with volatile content (generated) → ignore rules should exclude them.
 
+## Review remediation (2026-06-22)
+
+Three corrections (the §"Algorithm" delete step above is superseded by the first):
+
+- **Delete is NOT a file-node cascade:** FK `ON DELETE CASCADE` removes a *deleted node's* edges, but symbols are
+  **not** FK-children of the `file` node — deleting the file node would orphan its symbols. Instead **stamp
+  `attrs.file_uid` on every symbol** and delete by it: `DELETE FROM nodes WHERE json_extract(attrs,'$.file_uid') = :f`
+  (each symbol's edges then cascade from its own deletion).
+- **Pending edges (C2):** the adapter's pending edges `(src_uid, dst_name, relation, confidence)` are resolved in
+  pass 2 against the global symbol table; unresolved ones are reported in `IndexReport.edges_unresolved`, never forced
+  through `upsert_edge` (which would raise).
+- **File linkage (C5):** `attrs.file_uid` (+ the file's `mtime`) is the standard join key reused by the FILTER builder
+  and the hybrid ranker.
+
 ## References
 
 - [TD-003](../../decisions/TD-003-sqlite-single-store-recursive-cte.md), [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)

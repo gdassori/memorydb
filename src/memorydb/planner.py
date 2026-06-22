@@ -51,11 +51,33 @@ class RetrievalPlanner:
 
     # --- intent handlers ---------------------------------------------------
     def _locate(self, query: str) -> dict:
-        symbol = self._symbol(query)
+        # Ground the bare query against the index: try each identifier-shaped token and pick the
+        # first that actually names a symbol. This drops stopwords ("where"/"used") without a stop
+        # list and makes the regex default far less brittle than "take the last token" (TD-007).
+        symbol = ""
+        matched_uids: list[str] = []
+        for tok in self._candidates(query):
+            rows = self.store.conn.execute(
+                "SELECT uid FROM nodes WHERE name = :t OR uid = :t", {"t": tok}
+            ).fetchall()
+            if rows:
+                symbol = tok
+                matched_uids = [r[0] for r in rows]
+                break
+        refs = Q.references_to(self.store, symbol) if symbol else []
+        # A bare name can match several symbols (methods named `send` in different classes); report
+        # the ambiguity explicitly rather than silently merging (C4). A uid from the LLM classifier
+        # yields exactly one match.
+        by_target: dict = {}
+        for r in refs:
+            by_target.setdefault(r["target_uid"], []).append(r)
         return {
             "intent": "LOCATE",
             "symbol": symbol,
-            "references": Q.references_to(self.store, symbol),
+            "matched_uids": matched_uids,
+            "ambiguous": len(matched_uids) > 1,
+            "references": refs,
+            "by_target": by_target,
         }
 
     def _explain(self, query: str, k: int, depth: int) -> dict:
@@ -72,10 +94,10 @@ class RetrievalPlanner:
 
     # --- helpers -----------------------------------------------------------
     @staticmethod
-    def _symbol(query: str) -> str:
+    def _candidates(query: str) -> list[str]:
+        """Identifier tokens ordered best-first: identifier-shaped (CamelCase/snake/dotted) before
+        plain words, longest first. The caller grounds these against the index (see ``_locate``)."""
         toks = _IDENT.findall(query)
-        # Prefer identifier-shaped tokens (CamelCase / snake_case / dotted) over plain words.
-        cands = [t for t in toks if any(c.isupper() for c in t) or "_" in t or "." in t]
-        if cands:
-            return cands[-1]
-        return toks[-1] if toks else ""
+        shaped = [t for t in toks if any(c.isupper() for c in t) or "_" in t or "." in t]
+        rest = [t for t in toks if t not in shaped]
+        return sorted(shaped, key=len, reverse=True) + sorted(rest, key=len, reverse=True)

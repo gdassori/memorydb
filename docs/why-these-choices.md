@@ -26,6 +26,7 @@
 | [TD-006](decisions/TD-006-graph-aware-embeddings-staleness.md) | Graph-aware (node-context) embeddings with staleness tracking | accepted |
 | [TD-007](decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md) | Intent-routed retrieval; the "TJ operator" is orchestration, not a planner | accepted |
 | [TD-008](decisions/TD-008-defer-temporal-confidence-ontology-reflection.md) | Defer temporal/confidence machinery, ontology, reflection — keep the columns | proposed |
+| [TD-009](decisions/TD-009-versioned-identity-for-temporal-history.md) | Temporal history in separate tables; `nodes`/`edges` keep a UNIQUE current version | accepted |
 
 ## The architecture in one picture
 

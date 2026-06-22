@@ -117,6 +117,13 @@ Compaction + pruning keep long-term size sub-linear. LLM calls are the budget; b
   from provenance; the eval harness guards retrieval quality across cycles.
 - **Concept/ontology drift** compounding over cycles → caps + verification + human review queue for low-confidence concepts.
 
+## Review remediation (2026-06-22)
+
+`since_cursor` must **not** be a raw `nodes.id`: re-indexing deletes+reinserts symbols with *new* ids, which would
+reprocess them every cycle and never observe deletions. Use a monotonic **change cursor** instead — an `updated_at`
+timestamp stamped on nodes (or a small append-only change log written by the indexer) — and pick up deletions from the
+indexer's delete pass rather than inferring them from id gaps.
+
 ## References
 
 - [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)

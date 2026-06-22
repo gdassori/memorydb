@@ -37,6 +37,14 @@ This matches "what is X's role / how does X fit" queries far better than source 
 - **Positive:** retrieval ranks by role, not surface syntax; re-embedding is incremental (only `embed_dirty` nodes).
 - **Negative:** changing a hub node cascades staleness to its neighbors. Bound the cost by batching dirty re-embeds; the cost is embedding calls, not correctness.
 
+## Review note (2026-06-22)
+
+Clarification on staleness: under the code uid scheme (`relpath::qualname`) a *rename* changes the uid, so for
+code it is a delete+add, **not** an in-place rename — the "mark depth-1 neighbors on rename" cascade therefore
+applies to **agent-memory entities** (stable uids), not code symbols. `upsert_edge` marks both endpoints dirty;
+the serializer reads a node's neighbors via the new `query.node_neighborhood` helper
+([graph-aware-embedding-pipeline.md](../specs/active/graph-aware-embedding-pipeline.md)).
+
 ## Alternatives Considered
 
 ### Embed the raw source body

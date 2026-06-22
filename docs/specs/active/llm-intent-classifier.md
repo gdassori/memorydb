@@ -136,6 +136,17 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
 - **Provider lock-in** if we hardcode prompts to one model → keep the prompt generic; client injected (TD-002).
 - **Misrouting** hurting UX → default ambiguous to EXPLAIN and always keep the regex fallback.
 
+## Review remediation (2026-06-22)
+
+- **FILTER joins (C5):** there is no implicit `JOIN file f`. The `since`/`lang` predicates use the symbol's
+  `attrs.file_uid` to reach the owning `file` node (or read the denormalized `attrs.mtime`/`attrs.lang` stamped by the
+  indexer). Define the join explicitly in the builder.
+- **mtime format:** store mtime as an **ISO-8601 UTC string** so `json_extract(...,'$.mtime') >= :since` is a correct
+  lexical comparison; epoch *numbers* would mis-compare against a text bind via type affinity. Values remain bound
+  (injection-safe).
+- **LOCATE uid (C4):** when the classifier returns a `symbol`, prefer resolving it to a **uid** and pass that to
+  `references_to`, so the planner's ambiguity grouping collapses to a single target.
+
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)

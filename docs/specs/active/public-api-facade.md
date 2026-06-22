@@ -118,6 +118,14 @@ those of the indexer/planner.
 - **Facade hiding the ports** would undercut [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)
   → keep `store`/`planner` escape hatches and keep every default overridable.
 
+## Review remediation (2026-06-22)
+
+- **Embedder/vec dim (C3):** with `[vector]` active, `vec_items` is built at the embedder's dim on the first embedding,
+  and `open()` records that dim in `meta`. The default `HashingEmbedder` (dim 64) and a real model must not share a
+  store without a `rebuild_index` — `open()` should warn on a dim/model mismatch.
+- **Return type:** `ask(as_context=True)` returns a `ContextResult`; `as_context=False` returns the raw result dict —
+  document the union (or split into `ask`/`ask_context`).
+
 ## References
 
 - [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)

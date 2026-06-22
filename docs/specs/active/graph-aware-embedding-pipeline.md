@@ -135,6 +135,17 @@ Batch size trades latency vs throughput. Hub-node capping bounds serialization l
 - **Cascade storms** when a hub node changes name → cap fan-out + batch; acceptable since renames are rare.
 - **Nondeterministic embedders** (real models) break reproducibility tests → tests pin `HashingEmbedder`.
 
+## Review remediation (2026-06-22)
+
+- The serializer reads a node's edges via the now-implemented **`query.node_neighborhood(store, node_id)`** (in/out
+  edges with neighbor uid/name/relation/confidence, deterministically ordered) — no ad-hoc SQL in the serializer.
+- **Rename reconciliation:** under the code uid scheme (`relpath::qualname`) a rename **changes the uid**, so for code
+  it is delete+add and the "depth-1 neighbors on rename" cascade is a **no-op for code** — it applies only to
+  **agent-memory entities** with stable uids. The endpoints-dirty-on-edge-change rule (already in `Store.upsert_edge`)
+  is what covers code.
+- **Type-aware serialization:** non-code node types (e.g. `Concept`) have no `attrs.signature`; the serializer treats
+  signature/docstring as optional so it generalizes across adapters.
+
 ## References
 
 - [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md), [TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)

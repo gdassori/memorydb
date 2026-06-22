@@ -116,6 +116,19 @@ some recall. `rebuild_index` is O(n) and run rarely (dim/model change). Memory: 
 - **vec_items drift** from `embeddings` → `rebuild_index` backstop + sync on every write; a test asserts agreement.
 - **sqlite-vec API churn** (young project) → pin the version; isolate all extension calls in `SqliteVecIndex`.
 
+## Review remediation (2026-06-22)
+
+- **Lazy, dim-correct creation (C3):** never hardcode `float[768]`. Create `vec_items` on the **first `set_embedding`**
+  at the embedder's actual dim; persist the dim in `meta(key,value)`; `rebuild_index()` (drop + recreate) on a
+  dim/model change. Migrations cannot fix the dim because they run before any embedding exists.
+- **Metric consistency (C6):** use **cosine** in `vec0` (column `distance=cosine` if the pinned sqlite-vec supports it,
+  otherwise store L2-normalized vectors) so rankings match `BruteForceVectorIndex`'s cosine; add a cross-backend
+  agreement test.
+- **Capability detection (C7):** `make_vector_index` must fall back to brute force when `enable_load_extension` is
+  **missing or disabled** (AttributeError / OperationalError), not only when the extension file is absent.
+- **Delete sync:** node deletion must `DELETE FROM vec_items WHERE node_id = ?` (vec0 has no FK cascade); `rebuild_index`
+  is the backstop against drift.
+
 ## References
 
 - [TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)

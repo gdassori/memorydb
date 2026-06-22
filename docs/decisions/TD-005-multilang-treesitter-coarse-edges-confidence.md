@@ -27,6 +27,16 @@ Breadth now, precision incrementally. This is where the `confidence` column (alr
 - **Positive:** day-one coverage of many languages with one extractor; a clean upgrade path (drop in a precise resolver per language without touching callers).
 - **Negative:** multilang edges have false positives; `LOCATE` on a coarse-only language is **best-effort** until a precise resolver lands. This weakens the "compiler-knows-exactly" promise for those languages — we log/flag it rather than hide it.
 
+## Review note (2026-06-22)
+
+Two gaps from review: (1) the tier values (0.9/0.6/0.3) and the "LOCATE trusts ≥0.9" threshold are
+**unvalidated** — only the eval harness ([eval-harness.md](../specs/active/eval-harness.md)) can calibrate them,
+so treat them as ordinal until then; (2) the bare-name *global* tier needs a way to store an edge to an
+**unresolved name** (since `upsert_edge` requires existing endpoints) — see the `pending_edges` mechanism in
+[code-adapter-treesitter.md](../specs/active/code-adapter-treesitter.md) and
+[indexer-ingestion-pipeline.md](../specs/active/indexer-ingestion-pipeline.md). The store now keeps **confidence
+monotonic** on upsert (`MAX(old, new)`), so a precise edge is never downgraded by a later coarse pass.
+
 ## Alternatives Considered
 
 ### Python-only first, with jedi/pyright for precise edges

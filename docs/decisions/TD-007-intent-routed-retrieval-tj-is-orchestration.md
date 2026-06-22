@@ -33,6 +33,14 @@ Vectors are used only as **GPS for fuzzy natural language**; determinism is used
 - **Positive:** exact answers stay exact; vector noise never pollutes `LOCATE`; the planner is trivially unit-testable.
 - **Negative:** the default regex classifier will misroute some queries. Mitigate by making it injectable and defaulting **ambiguous → `EXPLAIN`** (the safe, richer path).
 
+## Review note (2026-06-22)
+
+LOCATE is exact *with respect to the graph*, but the query→symbol step is only as good as the extracted symbol.
+The regex default now **grounds candidate tokens against the index** (accepting a token only if it names a real
+symbol) and **reports ambiguity** when a bare name matches several symbols (`ambiguous` / `matched_uids` in the
+LOCATE result). A uid from the LLM classifier ([llm-intent-classifier.md](../specs/active/llm-intent-classifier.md))
+disambiguates fully.
+
 ## Alternatives Considered
 
 ### Vector-first for everything (classic RAG)

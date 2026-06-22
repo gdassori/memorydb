@@ -60,3 +60,11 @@ Implement the **domain-agnostic substrate** ([TD-002](../../decisions/TD-002-por
 - **Recursive-CTE correctness/termination** with bidirectional expansion + relation filters. Mitigate: dedup on `(id)` with `MIN(depth)`, hard depth bound, unit tests on a known graph.
 - **Brute-force vector cost** at scale. Mitigate: interface boundary — swap to `sqlite-vec` via the `[vector]` extra ([TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)).
 - **Coarse multilang edges mislabeled as truth.** Mitigate: `confidence < 1.0` + planner downweighting ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)); never surface heuristic edges as exact in `LOCATE`.
+
+## Review remediation (2026-06-22)
+
+Post-review hardening landed in v0 (tested): `Store.upsert_edge` keeps **confidence monotonic** (`MAX(old, new)`) so a
+precise edge is never downgraded; `query.node_neighborhood` was added for the embedding serializer; and `LOCATE` now
+**grounds the symbol against the index and reports ambiguity** (`ambiguous` / `matched_uids`) — so "exact LOCATE" means
+exact *given a resolved uid*, with bare-name collisions surfaced rather than silently merged (C4). See
+[adversarial-review-2026-06-22.md](../adversarial-review-2026-06-22.md).

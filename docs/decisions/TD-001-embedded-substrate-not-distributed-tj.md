@@ -27,6 +27,14 @@ The TJ operator's real win is killing the **network/IPC boundary** of "query 3 d
 - **Positive:** tiny, dependency-light, debuggable; the "TJ operator" becomes a readable Python function; no planner/cost-model engineering; effort goes into representation and retrieval routing instead.
 - **Negative:** no cross-modal cost optimization. If we ever reach >~10⁶ nodes with latency-critical fused queries, this is the TD to revisit.
 
+## Review note (2026-06-22)
+
+Adversarial review confirms the direction but flags that *orchestration order* still matters even without a
+cost model: a vector-first scan over a large candidate set is wasteful when a cheap SQL `FILTER` could prune
+first. Mitigated because the planner is intent-routed — `FILTER` runs SQL first, then an optional vector rerank
+([TD-007](TD-007-intent-routed-retrieval-tj-is-orchestration.md)) — but the "95% with plain orchestration" claim
+assumes the planner picks a sane order *per intent*, not one fixed order.
+
 ## Alternatives Considered
 
 ### Build a real unified planner + cost model (a true TJ operator)

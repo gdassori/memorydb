@@ -27,6 +27,14 @@ Avoid building unbounded research machinery before there is a use case to evalua
 - **Positive:** v0 stays shippable, testable, and evaluable; the metadata model is ready the day a use case appears.
 - **Negative:** features sketched in the brainstorm are explicitly **not present yet** — this TD exists so nobody assumes otherwise.
 
+## Review note (2026-06-22)
+
+Correction: the claim that the *reserved columns alone* make temporal cheap is only partly true. The adversarial
+review (C1) showed the bitemporal model collides with `nodes.uid UNIQUE`, so temporal needs a small
+**schema/identity** decision — now made in [TD-009](TD-009-versioned-identity-for-temporal-history.md) (history
+tables; the current row keeps its UNIQUE uid). The columns remain useful day-one (static `confidence` weighting),
+but "just columns" is not sufficient for the temporal machinery itself.
+
 ## Alternatives Considered
 
 ### Build the full memory model (temporal + confidence + ontology + reflection) now

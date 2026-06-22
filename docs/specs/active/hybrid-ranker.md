@@ -122,6 +122,14 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 - **Opaque ranking** erodes trust → always return `breakdown`; the API can expose it.
 - **Over-weighting centrality** buries niche-but-correct hits → defaults keep vector as the largest weight.
 
+## Review remediation (2026-06-22)
+
+- **Recency source (C5):** read the owning file's mtime via the symbol's `attrs.file_uid` (or the denormalized
+  `attrs.mtime`), not an undefined file join.
+- **Normalization guard:** min-max over the candidate set **divides by zero** when there is a single candidate or all
+  scores are equal — guard with `range == 0 → contribution 0.5` (neutral) and keep the deterministic uid tie-break.
+  Add `test_single_candidate` and `test_all_equal_scores` to the plan.
+
 ## References
 
 - [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md), [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)
