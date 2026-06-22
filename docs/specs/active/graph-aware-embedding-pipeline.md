@@ -1,6 +1,6 @@
 ---
 title: "Graph-aware embedding pipeline"
-status: planned
+status: active
 created: 2026-06-22
 author: claude
 related_tds: [TD-006, TD-002, TD-004]
@@ -117,12 +117,13 @@ Batch size trades latency vs throughput. Hub-node capping bounds serialization l
 
 ## Tasks
 
-- [ ] `DefaultSerializer` with the exact deterministic format + hub cap
-- [ ] `EmbeddingPipeline.refresh()` / `reembed_all()` with batching + retry + report
-- [ ] dim assertion + model-change detection
-- [ ] `CodeSerializer` override in the code adapter
-- [ ] rename → depth-1 `mark_dirty` cascade
-- [ ] zero-dep tests (clear / restale / incremental / determinism / rename)
+- [x] `DefaultSerializer` (deterministic format + hub cap; type-aware, signature/docstring optional)
+- [x] `EmbeddingPipeline.refresh()` / `reembed_all()` with batching + one retry + `EmbedReport`
+- [x] dim-consistency assertion per batch
+- [x] zero-dep tests (clear / incremental-restale / determinism / reembed-all / noop) — 5 green
+- [ ] model-change auto-detection (compare `embeddings.model`) → trigger `reembed_all`
+- [ ] `CodeSerializer` override in the code adapter (richer signature/docstring)
+- [ ] rename → depth-1 `mark_dirty` cascade — **agent-memory entities only** (no-op for code, [TD-006 review note](../../decisions/TD-006-graph-aware-embeddings-staleness.md))
 
 ## Open questions
 
