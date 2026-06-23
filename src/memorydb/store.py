@@ -17,14 +17,25 @@ from .vector import normalize, pack
 
 
 class Store:
-    def __init__(self, path: str = ":memory:") -> None:
-        self.conn = sqlite3.connect(path)
-        self.conn.row_factory = sqlite3.Row
-        # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.execute("PRAGMA journal_mode = WAL")
-        self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync per commit
-        migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
+    # MemoryDB is single-writer (an embedded, single-process substrate). A second concurrent writer is
+    # made to WAIT up to busy_timeout rather than crash immediately (R6-10/R6-11); long index() runs
+    # hold the write lock for their whole transaction, so raise this if you genuinely contend.
+    def __init__(self, path: str = ":memory:", *, busy_timeout_ms: int = 5000) -> None:
+        # timeout= sets the C-level busy handler so a locked DB blocks (then raises) instead of an
+        # instant 'database is locked'.
+        self.conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000.0)
+        try:
+            self.conn.row_factory = sqlite3.Row
+            # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
+            self.conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            if path != ":memory:":                     # WAL is meaningless for an in-memory DB
+                self.conn.execute("PRAGMA journal_mode = WAL")
+            self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync/commit
+            migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
+        except Exception:
+            self.conn.close()                          # don't leak the connection on a failed open (R6-10)
+            raise
 
     # --- lifecycle ---------------------------------------------------------
     def close(self) -> None:

@@ -360,6 +360,41 @@ def test_r6_13_stopwords_not_grounded_as_symbol():
     assert "send_notification" in RetrievalPlanner._candidates("where is send_notification used?")
 
 
+# --- Round 6 — Batch E: concurrency (R6-10/11) ----------------------------------------------
+def test_r6_10_busy_timeout_and_wal_only_for_files():
+    p = os.path.join(tempfile.mkdtemp(), "c.db")
+    s1 = Store(p)
+    Store(p)                                                     # second open must not crash (R6-10)
+    assert int(s1.conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+    assert s1.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert Store(":memory:").conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "memory"
+
+
+def test_r6_11_concurrent_writers_wait_not_crash():
+    import threading
+    p = os.path.join(tempfile.mkdtemp(), "c.db")
+    Store(p).close()
+    errs = []
+
+    def writer(tag):
+        try:
+            st = Store(p)
+            for i in range(40):
+                st.upsert_node(Node(uid=f"{tag}-{i}", type="function", name="x"))
+            st.commit()
+            st.close()
+        except Exception as e:  # noqa
+            errs.append((tag, repr(e)))
+
+    ts = [threading.Thread(target=writer, args=(t,)) for t in ("a", "b")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert errs == []                                            # busy_timeout -> wait, no 'locked' crash
+    assert Store(p).conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 80
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():
