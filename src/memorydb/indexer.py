@@ -67,7 +67,7 @@ class Indexer:
 
     def index(self, root: str) -> IndexReport:
         rep = IndexReport()
-        root = os.path.abspath(root)
+        root = os.path.abspath(os.path.expanduser(root))  # so "~/src/repo" works as documented (PR1-4)
         for ex in self.extractors:            # keep relpaths consistent with the indexed root
             if hasattr(ex, "repo_root"):
                 ex.repo_root = root

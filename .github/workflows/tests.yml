@@ -37,3 +37,33 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  # Non-editable install smoke test: an editable install (the job above) keeps src/ as the import
+  # root and so cannot catch missing package-data / find-packages gaps. This builds the wheel and
+  # imports it from a clean dir, which is what a real `pip install memorydb` does (guards PR1-1).
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Assert schema.sql is packaged
+        run: python -c "import zipfile, glob; w=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(w).namelist(); assert any(n.endswith('memorydb/schema.sql') for n in names), names; print('schema.sql packaged OK')"
+
+      - name: Install the wheel (core only — no extras) and smoke it
+        run: |
+          pip install dist/*.whl
+          cd "$RUNNER_TEMP"   # import from site-packages, NOT the source tree
+          python -c "import memorydb; print('memorydb', memorydb.__version__)"
+          memorydb --help > /dev/null
+          memorydb-eval --help > /dev/null
+          echo "console scripts import + run OK"
