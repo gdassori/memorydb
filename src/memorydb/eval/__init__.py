@@ -99,6 +99,10 @@ class EvalCase(BaseModel):
 
 
 class Scorecard(BaseModel):
+    # forbid extra keys so `memorydb-eval compare` rejects a non-scorecard JSON instead of silently
+    # producing empty deltas (R6-20).
+    model_config = ConfigDict(extra="forbid")
+
     locate: dict = Field(default_factory=dict)    # {precision, precision_high, recall, f1, n}
     explain: dict = Field(default_factory=dict)   # {recall_at_k, mrr, ndcg, n}
     per_case: list = Field(default_factory=list)

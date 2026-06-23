@@ -50,7 +50,7 @@ class Node(BaseModel):
     source: Optional[str] = None
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
-    confidence: float = 1.0
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)   # bounded so a bogus value can't win MAX (R6-18)
 
     def as_params(self) -> dict:
         return {
@@ -72,6 +72,6 @@ class Edge(BaseModel):
     src: str
     dst: str
     relation: str
-    weight: float = 1.0
-    confidence: float = 1.0  # coarse/heuristic edges get < 1.0 (TD-005)
+    weight: float = Field(default=1.0, ge=0.0)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)  # coarse/heuristic edges get < 1.0 (TD-005, R6-18)
     source: Optional[str] = None

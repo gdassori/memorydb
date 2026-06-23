@@ -125,9 +125,11 @@ def _node_count(db: MemoryDB) -> int:
     return db.store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
 
 
-def _no_data(db: MemoryDB) -> bool:
+def _no_data(db: MemoryDB, as_json: bool = False) -> bool:
     if _node_count(db) == 0:
         print("no data — run `memorydb index <path>` first.", file=sys.stderr)
+        if as_json:
+            print("{}")   # emit a valid (empty) JSON document so a --json consumer doesn't choke (R6-15)
         return True
     return False
 
@@ -156,7 +158,7 @@ def _cmd_index(args) -> int:
 def _cmd_query(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         if args.context:
             ctx = db.ask(args.text, k=args.k, depth=args.depth, as_context=True, budget_tokens=args.budget)
@@ -172,7 +174,7 @@ def _cmd_query(args) -> int:
 def _cmd_locate(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         refs = db.locate(args.symbol)
         if args.json:
@@ -192,7 +194,7 @@ def _cmd_locate(args) -> int:
 def _cmd_explain(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         _render_result(db.explain(args.text, k=args.k, depth=args.depth), args.json)
         return 0

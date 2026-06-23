@@ -300,6 +300,44 @@ def test_r6_2_precise_edge_survives_callee_edit_with_ambiguous_name():
     assert _xconf(s, "a.py::g", "b.py::foo") == 0.97   # survived via exact dst_uid (by-name is ambiguous)
 
 
+# --- Round 6 — Batch F: pydantic/CLI (R6-18/20/15) ------------------------------------------
+def test_r6_18_confidence_is_bounded():
+    from memorydb import Edge
+    import pydantic
+    Edge(src="a", dst="b", relation="CALLS", confidence=0.97)        # in-range ok
+    for bad in (1.5, -0.1):
+        try:
+            Edge(src="a", dst="b", relation="CALLS", confidence=bad)
+            assert False, f"expected ValidationError for confidence={bad}"
+        except pydantic.ValidationError:
+            pass
+
+
+def test_r6_20_scorecard_rejects_garbage_json():
+    from memorydb.eval import Scorecard
+    import pydantic
+    Scorecard.from_dict({"locate": {}, "explain": {}, "k": 5})      # valid
+    try:
+        Scorecard.from_dict({"not_a_scorecard": True, "lol": 1})
+        assert False, "expected ValidationError for a non-scorecard dict"
+    except pydantic.ValidationError:
+        pass
+
+
+def test_r6_15_empty_db_json_is_valid():
+    import io
+    import json as _json
+    import tempfile as _tf
+    from contextlib import redirect_stdout
+    from memorydb import cli
+    db = os.path.join(_tf.mkdtemp(), "empty.sqlite")
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = cli.main(["--db", db, "query", "anything", "--json"])
+    assert code == 0
+    assert _json.loads(out.getvalue()) == {}                         # valid (empty) JSON, not 0 bytes
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

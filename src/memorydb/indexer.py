@@ -309,7 +309,10 @@ class Indexer:
         up = un = 0
         name_cache: dict = {}   # memoize name->uids: many pending rows share a target name (perf MR-14)
         for r in rows:
-            dst = self._existing_dst(r["dst_uid"]) if r["dst_uid"] else None   # exact precise target
+            # A precise row carries the exact dst_uid (R6-2) — let _safe_edge confirm/upgrade it; only a
+            # coarse by-name row resolves through the name table. A precise target that vanished is NOT
+            # re-resolved by name (that would defeat the precise binding).
+            dst = r["dst_uid"]
             if dst is None:
                 name = r["dst_name"]
                 if name not in name_cache:
@@ -331,24 +334,22 @@ class Indexer:
         return [r["uid"] for r in rows]
 
     def _safe_edge(self, src_uid, dst_uid, relation, confidence, source) -> bool:
-        dst_uid = self._existing_dst(dst_uid)
-        if dst_uid is None:
-            return False
-        try:
-            self.store.upsert_edge(src_uid, dst_uid, relation, confidence=confidence, source=source)
-            return True
-        except KeyError:
-            return False
+        # Try the given dst, then its package form (an import target computed as <dir>.py::sym may be a
+        # package, whose defs are keyed <dir>/__init__.py::sym — MR-7). upsert_edge raises KeyError on a
+        # missing endpoint, which is the existence check — no extra pre-lookup id_for per edge (R6-21).
+        for cand in (dst_uid, self._init_form(dst_uid)):
+            if cand is None:
+                continue
+            try:
+                self.store.upsert_edge(src_uid, cand, relation, confidence=confidence, source=source)
+                return True
+            except KeyError:
+                continue
+        return False
 
-    def _existing_dst(self, dst_uid: str):
-        """The dst uid as given if it exists, else its package form: an import target computed as
-        ``<dir>.py::sym`` is actually a package, whose defs are keyed ``<dir>/__init__.py::sym`` (MR-7).
-        Returns the existing uid or None."""
-        if self.store.id_for(dst_uid) is not None:
-            return dst_uid
+    @staticmethod
+    def _init_form(dst_uid: str):
         mod, sep, sym = dst_uid.partition("::")
         if sep and mod.endswith(".py"):
-            alt = f"{mod[:-3]}/__init__.py::{sym}"
-            if self.store.id_for(alt) is not None:
-                return alt
+            return f"{mod[:-3]}/__init__.py::{sym}"
         return None
