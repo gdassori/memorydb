@@ -256,6 +256,50 @@ def test_mr20_traverse_drops_nonexistent_seed():
     assert {r["id"] for r in Q.traverse(s, [s.id_for("a")], max_depth=1)} == {s.id_for("a")}
 
 
+# --- Round 6 — Batch A: MR-6 completeness (R6-1/2/12/19) -------------------------------------
+def test_r6_1_edge_src_uses_ordinal_uid():
+    # a conditionally-defined def is collected AND its outgoing edge uses its ordinal uid, not a bare one
+    repo = _repo({"m.py":
+        "def helper():\n    return 0\n\nFLAG = True\n"
+        "if FLAG:\n    def f():\n        return 1\n"
+        "else:\n    def f():\n        return helper()\n"})
+    ex = PythonResolver(repo_root=repo).extract(os.path.join(repo, "m.py"))
+    assert {n.uid for n in ex.nodes if n.name == "f"} == {"m.py::f", "m.py::f#1"}
+    assert [(e.src, e.dst) for e in ex.edges if e.dst == "m.py::helper"] == [("m.py::f#1", "m.py::helper")]
+
+
+def test_r6_12_self_method_resolves_to_impl_not_stub():
+    repo = _repo({"c.py":
+        "from typing import overload\nclass C:\n"
+        "    @overload\n    def m(self, x: int): ...\n"
+        "    @overload\n    def m(self, x: str): ...\n"
+        "    def m(self, x):\n        return 1\n"
+        "    def go(self):\n        return self.m(1)\n"})
+    ex = PythonResolver(repo_root=repo).extract(os.path.join(repo, "c.py"))
+    assert [e.dst for e in ex.edges if e.src == "c.py::C.go"] == ["c.py::C.m#2"]   # the impl, not a stub
+
+
+def test_r6_19_nested_function_is_function_not_method():
+    repo = _repo({"n.py": "def outer():\n    def inner():\n        return 1\n    return inner()\n"})
+    ex = PythonResolver(repo_root=repo).extract(os.path.join(repo, "n.py"))
+    assert [(n.uid, n.type) for n in ex.nodes if n.name == "inner"] == [("n.py::outer.inner", "function")]
+
+
+def test_r6_2_precise_edge_survives_callee_edit_with_ambiguous_name():
+    repo = _repo({
+        "b.py": "def foo():\n    return 1\n",
+        "c.py": "def foo():\n    return 2\n",          # 'foo' is now ambiguous by name
+        "a.py": "from b import foo\n\ndef g():\n    return foo()\n"})
+    s = Store(":memory:")
+    idx = Indexer(s, [PythonResolver()])
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "b.py::foo") == 0.97
+    with open(os.path.join(repo, "b.py"), "w") as fh:
+        fh.write("def foo():\n    return 11  # edited body\n")
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "b.py::foo") == 0.97   # survived via exact dst_uid (by-name is ambiguous)
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

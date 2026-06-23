@@ -77,12 +77,14 @@ class _Extractor:
         self.imports: dict = {}                        # alias -> ("sym", relpath, name)  for `from m import name`
         self.mod_imports: dict = {}                    # alias -> relpath  for module-attribute access `mod.f()`
         self.star: list = []                           # relpaths of `from m import *`
-        self.module_defs: dict = {}                    # top-level name -> uid
-        self.class_methods: dict = {}                  # class qualname -> {method name}
+        self.module_defs: dict = {}                    # top-level name -> effective uid
+        self.class_methods: dict = {}                  # class qualname -> {method name -> effective uid}
         self.nodes: list = []
         self.edges: list = []
         self._seen: dict = {}                          # uid -> count, for #ordinal disambiguation (MR-6)
+        self._def_uid: dict = {}                       # id(ast def node) -> its ordinal uid (R6-1)
         self._def_stub: dict = {}                      # module def name -> is it an @overload-style stub
+        self._cm_stub: dict = {}                       # (classq, method name) -> stub
         self.locals_by_scope = self._scope_locals(stab)
 
     # --- public ------------------------------------------------------------
@@ -155,15 +157,20 @@ class _Extractor:
             return False
         return True
 
-    def _collect_defs(self, node: ast.AST, stack: list, depth: int = 0) -> None:
+    def _collect_defs(self, node: ast.AST, stack: list, depth: int = 0,
+                      parent_class: Optional[str] = None) -> None:
         if depth > _MAX_DEPTH:
             return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = ".".join(stack + [child.name])
                 uid = self._uid(qual)
+                self._def_uid[id(child)] = uid          # _walk_edges reuses this exact ordinal uid (R6-1)
                 is_class = isinstance(child, ast.ClassDef)
-                kind = "class" if is_class else ("method" if stack else "function")
+                # `method` only when the IMMEDIATE enclosing scope is a class; a function nested in a
+                # function is a `function`, not a `method` (R6-19).
+                kind = "class" if is_class else ("method" if parent_class else "function")
+                stub = self._is_stub(child)
                 doc = ast.get_docstring(child) or ""
                 self.nodes.append(Node(
                     uid=uid, type=kind, name=child.name,
@@ -174,17 +181,23 @@ class _Extractor:
                            "start_line": child.lineno,
                            "end_line": getattr(child, "end_lineno", child.lineno)},
                 ))
-                if not stack:
-                    # First real def wins; a later real impl supersedes an earlier @overload stub (MR-6).
-                    stub = self._is_stub(child)
+                if not stack:                           # module-level def: prefer the real impl over a stub
                     if child.name not in self.module_defs or (self._def_stub.get(child.name) and not stub):
                         self.module_defs[child.name] = uid
                         self._def_stub[child.name] = stub
-                if is_class:
-                    self.class_methods[qual] = {
-                        m.name for m in child.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    }
-                self._collect_defs(child, stack + [child.name], depth + 1)
+                if parent_class is not None:            # method: name -> effective (non-stub) uid (R6-12)
+                    cm = self.class_methods.setdefault(parent_class, {})
+                    key = (parent_class, child.name)
+                    if child.name not in cm or (self._cm_stub.get(key) and not stub):
+                        cm[child.name] = uid
+                        self._cm_stub[key] = stub
+                self._collect_defs(child, stack + [child.name], depth + 1,
+                                   parent_class=qual if is_class else None)
+            else:
+                # Descend into control-flow blocks (if/for/try/with) too, so a conditionally-defined
+                # def/class is collected as a node — and with the SAME uid _walk_edges will compute,
+                # since both now traverse every node (R6-1).
+                self._collect_defs(child, stack, depth + 1, parent_class)
 
     def _signature(self, node: ast.AST) -> str:
         lines = self.text.splitlines()
@@ -199,7 +212,7 @@ class _Extractor:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = ".".join(stack + [child.name])
-                uid = f"{self.rel}::{qual}"
+                uid = self._def_uid.get(id(child)) or f"{self.rel}::{qual}"  # same ordinal uid (R6-1)
                 if isinstance(child, ast.ClassDef):
                     for base in child.bases:
                         r = self._resolve(base, stack, classq)
@@ -239,8 +252,9 @@ class _Extractor:
             modrel = self.mod_imports.get(recv)
             if modrel:
                 return (f"{modrel}::{attr}", _IMPORT_ATTR)
-            if recv in ("self", "cls") and classq and attr in self.class_methods.get(classq, ()):
-                return (f"{self.rel}::{classq}.{attr}", _SELF_METHOD)
+            methods = self.class_methods.get(classq) if classq else None
+            if recv in ("self", "cls") and methods and attr in methods:
+                return (methods[attr], _SELF_METHOD)        # effective (non-stub) ordinal uid (R6-12)
         return None
 
     # --- symtable scope ----------------------------------------------------

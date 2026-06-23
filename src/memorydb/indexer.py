@@ -272,22 +272,26 @@ class Indexer:
         if "::" not in e.dst or e.dst.split("::", 1)[0] == src_file:
             return
         dst_name = e.dst.split("::", 1)[1].split(".")[-1]   # node `name` = last qualname component
-        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence)
+        # Carry the EXACT resolved dst uid so re-resolution rebuilds this precise edge even when the
+        # name is a duplicate qualname (R6-2); the by-name path is the fallback.
+        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence, dst_uid=e.dst)
 
-    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence) -> None:
+    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence, dst_uid=None) -> None:
         self.store.conn.execute(
-            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence) "
-            "VALUES(?, ?, ?, ?, ?) "
+            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence, dst_uid) "
+            "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src_uid, dst_name, relation) DO UPDATE SET "
             "  src_file = excluded.src_file, "
-            "  confidence = MAX(pending_edges.confidence, excluded.confidence)",
-            (src_uid, src_file, dst_name, relation, confidence),
+            "  confidence = MAX(pending_edges.confidence, excluded.confidence), "
+            "  dst_uid = COALESCE(excluded.dst_uid, pending_edges.dst_uid)",
+            (src_uid, src_file, dst_name, relation, confidence, dst_uid),
         )
 
     def _resolve_pending(self, changed_rels: set, affected_names: set):
-        """Resolve the candidate pending rows by name; returns (upserted, unresolved). Candidates are
-        rows from a (re)indexed file OR rows whose target name changed this run. Unique name match →
-        edge (MAX-confidence upsert); ambiguous/unknown → left pending for a future run."""
+        """Resolve the candidate pending rows; returns (upserted, unresolved). Candidates are rows from
+        a (re)indexed file OR rows whose target name changed this run. A precise row resolves to its
+        exact ``dst_uid`` (R6-2); otherwise a unique name match → edge; ambiguous/unknown → left
+        pending for a future run."""
         clauses, params = [], []
         if changed_rels:
             clauses.append("src_file IN (SELECT value FROM json_each(?))")
@@ -298,19 +302,22 @@ class Indexer:
         if not clauses:
             return 0, 0
         rows = self.store.conn.execute(
-            "SELECT src_uid, dst_name, relation, confidence FROM pending_edges WHERE "
+            "SELECT src_uid, dst_name, relation, confidence, dst_uid FROM pending_edges WHERE "
             + " OR ".join(clauses),
             params,
         ).fetchall()
         up = un = 0
         name_cache: dict = {}   # memoize name->uids: many pending rows share a target name (perf MR-14)
         for r in rows:
-            name = r["dst_name"]
-            if name not in name_cache:
-                name_cache[name] = self._resolve_name(name)
-            targets = name_cache[name]
-            if len(targets) == 1 and self._safe_edge(
-                r["src_uid"], targets[0], r["relation"], r["confidence"], "treesitter"
+            dst = self._existing_dst(r["dst_uid"]) if r["dst_uid"] else None   # exact precise target
+            if dst is None:
+                name = r["dst_name"]
+                if name not in name_cache:
+                    name_cache[name] = self._resolve_name(name)
+                targets = name_cache[name]
+                dst = targets[0] if len(targets) == 1 else None
+            if dst is not None and self._safe_edge(
+                r["src_uid"], dst, r["relation"], r["confidence"], "treesitter"
             ):
                 up += 1
             else:

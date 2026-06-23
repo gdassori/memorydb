@@ -76,15 +76,25 @@ def _m4_pending_edges(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_src_file ON pending_edges(src_file)")
 
 
+def _m5_pending_dst_uid(conn: sqlite3.Connection) -> None:
+    # The exact resolved dst uid for a PRECISE cross-file edge, so re-resolution after a callee edit
+    # rebuilds the same edge even when the target name is a duplicate qualname (R6-2). NULL for coarse
+    # by-name rows, which resolve via dst_name.
+    cols = {r[1] for r in conn.execute("PRAGMA table_xinfo(pending_edges)")}
+    if "dst_uid" not in cols:
+        conn.execute("ALTER TABLE pending_edges ADD COLUMN dst_uid TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", apply=_m1_baseline),
     Migration(version=2, name="meta", apply=_m2_meta),
     Migration(version=3, name="file_uid_index", apply=_m3_file_uid_index),
     Migration(version=4, name="pending_edges", apply=_m4_pending_edges),
+    Migration(version=5, name="pending_dst_uid", apply=_m5_pending_dst_uid),
     # Future (documented in specs, not yet coded):
-    #   5: node_history / edge_history (TD-009 temporal identity)
-    #   6: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
-    #   7: concepts / concept_edges (concept-ontology-layer)
+    #   6: node_history / edge_history (TD-009 temporal identity)
+    #   7: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
+    #   8: concepts / concept_edges (concept-ontology-layer)
 ]
 LATEST = MIGRATIONS[-1].version
 
