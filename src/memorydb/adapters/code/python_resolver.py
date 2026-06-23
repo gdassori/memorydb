@@ -74,12 +74,15 @@ class _Extractor:
         self.text = text
         self.tree = tree
         self.pkg = self._package_parts(rel)            # dotted package of this module, as path parts
-        self.imports: dict = {}                        # alias -> ("sym", relpath, name) | ("mod", relpath, None)
+        self.imports: dict = {}                        # alias -> ("sym", relpath, name)  for `from m import name`
+        self.mod_imports: dict = {}                    # alias -> relpath  for module-attribute access `mod.f()`
         self.star: list = []                           # relpaths of `from m import *`
         self.module_defs: dict = {}                    # top-level name -> uid
         self.class_methods: dict = {}                  # class qualname -> {method name}
         self.nodes: list = []
         self.edges: list = []
+        self._seen: dict = {}                          # uid -> count, for #ordinal disambiguation (MR-6)
+        self._def_stub: dict = {}                      # module def name -> is it an @overload-style stub
         self.locals_by_scope = self._scope_locals(stab)
 
     # --- public ------------------------------------------------------------
@@ -99,7 +102,9 @@ class _Extractor:
 
     def _from_relpath(self, node: ast.ImportFrom) -> Optional[str]:
         if node.level:                                 # relative import: resolve against this package
-            base = self.pkg[: len(self.pkg) - (node.level - 1)] if (node.level - 1) <= len(self.pkg) else []
+            if node.level > len(self.pkg):             # escapes the top package (an ImportError) — don't
+                return None                            # guess, else it collides onto a top-level module (MR-13)
+            base = self.pkg[: len(self.pkg) - (node.level - 1)]
             parts = list(base) + (node.module.split(".") if node.module else [])
         else:
             parts = node.module.split(".") if node.module else []
@@ -109,26 +114,54 @@ class _Extractor:
         for n in ast.walk(self.tree):                  # include nested (function-local) imports
             if isinstance(n, ast.Import):
                 for a in n.names:
-                    alias = a.asname or a.name.split(".")[0]
-                    self.imports[alias] = ("mod", _module_relpath(a.name), None)
+                    if a.asname:                       # import x.y as z  ->  z = x/y.py
+                        self.mod_imports[a.asname] = _module_relpath(a.name)
+                    else:                              # import x.y.z binds the TOP-LEVEL `x` -> x.py (MR-10)
+                        top = a.name.split(".")[0]
+                        self.mod_imports.setdefault(top, _module_relpath(top))
             elif isinstance(n, ast.ImportFrom):
                 target = self._from_relpath(n)
                 if any(al.name == "*" for al in n.names):
                     if target:
                         self.star.append(target)
                     continue
+                if not target:
+                    continue
+                pkgdir = target[:-3]                    # <pkg>.py -> <pkg>/ for submodule resolution
                 for a in n.names:
-                    if target:
-                        self.imports[a.asname or a.name] = ("sym", target, a.name)
+                    local = a.asname or a.name
+                    # `from m import name`: `name` may be a re-exported SYMBOL (bare call name()) or a
+                    # SUBMODULE (attribute call name.f()). Register both interpretations (MR-11).
+                    self.imports[local] = ("sym", target, a.name)
+                    self.mod_imports.setdefault(local, f"{pkgdir}/{a.name}.py")
 
     # --- defs / nodes ------------------------------------------------------
+    def _uid(self, qual: str) -> str:
+        """relpath::qual with the same #ordinal disambiguation the CodeAdapter uses, so duplicate
+        qualnames (e.g. @overload stubs + impl) get matching uids in both adapters and merge (MR-6)."""
+        u = f"{self.rel}::{qual}"
+        n = self._seen.get(u, -1) + 1
+        self._seen[u] = n
+        return u if n == 0 else f"{u}#{n}"
+
+    @staticmethod
+    def _is_stub(child: ast.AST) -> bool:
+        """A def whose body is only `...` / `pass` / a docstring — i.e. a typing.overload stub."""
+        for s in getattr(child, "body", []):
+            if isinstance(s, ast.Pass):
+                continue
+            if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant):
+                continue
+            return False
+        return True
+
     def _collect_defs(self, node: ast.AST, stack: list, depth: int = 0) -> None:
         if depth > _MAX_DEPTH:
             return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = ".".join(stack + [child.name])
-                uid = f"{self.rel}::{qual}"
+                uid = self._uid(qual)
                 is_class = isinstance(child, ast.ClassDef)
                 kind = "class" if is_class else ("method" if stack else "function")
                 doc = ast.get_docstring(child) or ""
@@ -142,7 +175,11 @@ class _Extractor:
                            "end_line": getattr(child, "end_lineno", child.lineno)},
                 ))
                 if not stack:
-                    self.module_defs.setdefault(child.name, uid)
+                    # First real def wins; a later real impl supersedes an earlier @overload stub (MR-6).
+                    stub = self._is_stub(child)
+                    if child.name not in self.module_defs or (self._def_stub.get(child.name) and not stub):
+                        self.module_defs[child.name] = uid
+                        self._def_stub[child.name] = stub
                 if is_class:
                     self.class_methods[qual] = {
                         m.name for m in child.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -191,17 +228,17 @@ class _Extractor:
                 return None
             if name in self.module_defs:
                 return (self.module_defs[name], _LOCAL)
-            kind = self.imports.get(name)
-            if kind and kind[0] == "sym":
-                return (f"{kind[1]}::{kind[2]}", _IMPORT_SYM)
+            sym = self.imports.get(name)
+            if sym:
+                return (f"{sym[1]}::{sym[2]}", _IMPORT_SYM)
             if len(self.star) == 1:                          # single star import: a plausible candidate
                 return (f"{self.star[0]}::{name}", _STAR)
             return None
         if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
             recv, attr = fn.value.id, fn.attr
-            kind = self.imports.get(recv)
-            if kind and kind[0] == "mod":
-                return (f"{kind[1]}::{attr}", _IMPORT_ATTR)
+            modrel = self.mod_imports.get(recv)
+            if modrel:
+                return (f"{modrel}::{attr}", _IMPORT_ATTR)
             if recv in ("self", "cls") and classq and attr in self.class_methods.get(classq, ()):
                 return (f"{self.rel}::{classq}.{attr}", _SELF_METHOD)
         return None
@@ -219,12 +256,16 @@ class _Extractor:
                 locs = set()
                 for sym in table.get_symbols():
                     try:
-                        if sym.is_parameter() or (sym.is_local() and not sym.is_namespace()
-                                                  and not sym.is_imported()):
+                        # Include namespace symbols (nested def/class names) so a call to a name a
+                        # nested def shadows is skipped, not wrongly bound to a module def (MR-8). The
+                        # is_imported exclusion keeps genuine imports resolvable.
+                        if sym.is_parameter() or (sym.is_local() and not sym.is_imported()):
                             locs.add(sym.get_name())
                     except Exception:
                         continue
-                out[".".join(stack)] = locs
+                # Union same-named sibling scopes (e.g. @property + @x.setter) instead of overwriting,
+                # so the shadowing set is never silently lost — skip if shadowed in ANY sibling (MR-9).
+                out.setdefault(".".join(stack), set()).update(locs)
             for ch in table.get_children():
                 walk(ch, stack + [ch.get_name()], depth + 1)
 

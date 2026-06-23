@@ -137,13 +137,15 @@ class Indexer:
                 for e in merged.edges:
                     if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
                         rep.edges_upserted += 1
+                        # Record a materialised CROSS-FILE edge as a durable pending row (at its true
+                        # confidence) so editing the callee file — which cascade-deletes the edge while
+                        # the unchanged caller is skipped — rebuilds it at >=0.97 instead of falling back
+                        # to a coarse 0.6 pending (MR-3). Only edges that ACTUALLY materialised are
+                        # persisted, so a skipped precise edge can't be re-resolved by-name onto a
+                        # different file (which would defeat MR-10's top-level binding).
+                        self._persist_cross_file(e)
                     else:
                         rep.edges_unresolved += 1
-                    # A precise CROSS-FILE edge is also recorded as a durable pending row (at its true
-                    # confidence) so that editing the callee file — which cascade-deletes the edge while
-                    # the unchanged caller is skipped — rebuilds it at >=0.97 instead of falling back to
-                    # a coarse 0.6 pending (data-integrity MR-3).
-                    self._persist_cross_file(e)
                 for (src_uid, dst_name, relation, conf) in merged.pending:
                     self._persist_pending(src_uid, rel, dst_name, relation, conf)
 
@@ -322,8 +324,24 @@ class Indexer:
         return [r["uid"] for r in rows]
 
     def _safe_edge(self, src_uid, dst_uid, relation, confidence, source) -> bool:
+        dst_uid = self._existing_dst(dst_uid)
+        if dst_uid is None:
+            return False
         try:
             self.store.upsert_edge(src_uid, dst_uid, relation, confidence=confidence, source=source)
             return True
         except KeyError:
             return False
+
+    def _existing_dst(self, dst_uid: str):
+        """The dst uid as given if it exists, else its package form: an import target computed as
+        ``<dir>.py::sym`` is actually a package, whose defs are keyed ``<dir>/__init__.py::sym`` (MR-7).
+        Returns the existing uid or None."""
+        if self.store.id_for(dst_uid) is not None:
+            return dst_uid
+        mod, sep, sym = dst_uid.partition("::")
+        if sep and mod.endswith(".py"):
+            alt = f"{mod[:-3]}/__init__.py::{sym}"
+            if self.store.id_for(alt) is not None:
+                return alt
+        return None

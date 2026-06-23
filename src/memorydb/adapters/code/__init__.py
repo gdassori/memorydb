@@ -129,14 +129,15 @@ class CodeAdapter:
         local: dict = {}            # simple name -> [uid, ...] (defs of that name in this file)
         imports: set = set()
         refs: list = []             # (enclosing_uid, callee_name, callee_root, relation)
-        seen: set = set()
+        seen: dict = {}             # uid -> count
 
-        def uid_for(qual: str, start_byte: int) -> str:
+        def uid_for(qual: str) -> str:
+            # #ordinal disambiguation for repeated qualnames, in source order — the PythonResolver uses
+            # the SAME scheme so duplicate-qualname symbols get matching uids and merge (MR-6).
             u = f"{rel}::{qual}"
-            if u in seen:           # deterministic disambiguation by byte offset (stable across re-parse)
-                u = f"{u}#{start_byte}"
-            seen.add(u)
-            return u
+            n = seen.get(u, -1) + 1
+            seen[u] = n
+            return u if n == 0 else f"{u}#{n}"
 
         def walk(node, stack, enclosing, depth=0):
             if depth > _MAX_WALK_DEPTH:     # bound hostile/pathological nesting (security I1)
@@ -149,7 +150,7 @@ class CodeAdapter:
                         walk(child, stack, enclosing, depth + 1)
                         continue
                     qual = ".".join(stack + [name])
-                    u = uid_for(qual, child.start_byte)
+                    u = uid_for(qual)
                     kind = "class" if t in spec.class_types else ("method" if stack else "function")
                     nodes.append(Node(
                         uid=u, type=kind, name=name, body=self._text(child, src)[:2000],

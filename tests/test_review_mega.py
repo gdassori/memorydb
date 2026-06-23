@@ -147,6 +147,75 @@ def test_mr5_streaming_embeds_all_and_clears_dirty():
     assert s.conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 5
 
 
+# --- Batch 3: PythonResolver correctness cluster (MR-6..MR-13) -------------------------------
+def _pyedges(repo, name):
+    ex = PythonResolver(repo_root=repo).extract(os.path.join(repo, name))
+    return ex
+
+
+def test_mr6_overload_ordinal_uids_and_impl_preferred():
+    repo = _repo({"m.py":
+        "from typing import overload\n"
+        "@overload\ndef process(x: int): ...\n"
+        "@overload\ndef process(x: str): ...\n"
+        "def process(x):\n    return x\n\n"
+        "def caller():\n    return process(1)\n"})
+    ex = _pyedges(repo, "m.py")
+    assert [n.uid for n in ex.nodes if n.name == "process"] == \
+        ["m.py::process", "m.py::process#1", "m.py::process#2"]      # #ordinal disambiguation (parity)
+    assert next(e for e in ex.edges if e.src == "m.py::caller").dst == "m.py::process#2"  # real impl
+
+
+def test_mr7_package_init_import_resolves():
+    repo = _repo({"pkg/__init__.py": "def shared():\n    return 1\n",
+                  "main.py": "from pkg import shared\n\ndef go():\n    return shared()\n"})
+    s = Store(":memory:")
+    Indexer(s, [PythonResolver()]).index(repo)
+    assert _xconf(s, "main.py::go", "pkg/__init__.py::shared") == 0.97
+
+
+def test_mr8_nested_def_shadowing_no_module_edge():
+    repo = _repo({"m.py":
+        "def helper():\n    return 0\n\n"
+        "def outer():\n    def helper():\n        return 1\n    return helper()\n"})
+    ex = _pyedges(repo, "m.py")
+    assert not any(e.src == "m.py::outer" and e.dst == "m.py::helper" for e in ex.edges)
+
+
+def test_mr9_sibling_scope_union_prevents_wrong_edge():
+    repo = _repo({"m.py":
+        "def helper():\n    return 0\n\n"
+        "FLAG = True\n"
+        "if FLAG:\n    def f():\n        helper = lambda: 1\n        return helper()\n"
+        "else:\n    def f():\n        return helper()\n"})
+    ex = _pyedges(repo, "m.py")
+    assert not any(e.dst == "m.py::helper" and e.src.startswith("m.py::f") for e in ex.edges)
+
+
+def test_mr10_dotted_import_binds_top_level():
+    repo = _repo({"pkg/sub.py": "def run():\n    return 1\n",
+                  "main.py": "import pkg.sub\n\ndef go():\n    return pkg.run()\n"})
+    s = Store(":memory:")
+    Indexer(s, [PythonResolver()]).index(repo)
+    assert _xconf(s, "main.py::go", "pkg/sub.py::run") is None       # binds top-level `pkg`, not pkg.sub
+
+
+def test_mr11_from_dot_import_submodule_resolves():
+    repo = _repo({"pkg/__init__.py": "", "pkg/util.py": "def helper():\n    return 1\n",
+                  "pkg/main.py": "from . import util\n\ndef run():\n    return util.helper()\n"})
+    s = Store(":memory:")
+    Indexer(s, [PythonResolver()]).index(repo)
+    assert _xconf(s, "pkg/main.py::run", "pkg/util.py::helper") == 0.95
+
+
+def test_mr13_escaping_relative_import_no_edge():
+    repo = _repo({"x.py": "def f():\n    return 1\n",
+                  "root.py": "from ..x import f\n\ndef g():\n    return f()\n"})
+    s = Store(":memory:")
+    Indexer(s, [PythonResolver()]).index(repo)
+    assert _xconf(s, "root.py::g", "x.py::f") is None                # `from ..x` escapes -> no wrong edge
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():
