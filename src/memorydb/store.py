@@ -110,8 +110,11 @@ class Store:
             "INSERT INTO edges(src, dst, relation, weight, confidence, source) "
             "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src, dst, relation) DO UPDATE SET "
-            "  weight  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.weight ELSE edges.weight END, "
-            "  source  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.source ELSE edges.source END, "
+            # Strict '>' : a STRICTLY higher-confidence claim takes weight/source; an equal-confidence
+            # re-upsert keeps the existing provenance, so a same-run re-resolve (or a coarse pass on a
+            # tie) can't clobber a precise edge's source (R7-3).
+            "  weight  = CASE WHEN excluded.confidence > edges.confidence THEN excluded.weight ELSE edges.weight END, "
+            "  source  = CASE WHEN excluded.confidence > edges.confidence THEN excluded.source ELSE edges.source END, "
             "  confidence = MAX(edges.confidence, excluded.confidence)",
             (s, d, relation, weight, confidence, source),
         )

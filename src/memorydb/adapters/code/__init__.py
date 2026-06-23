@@ -41,8 +41,10 @@ LANGS: tuple = (
              call_types=frozenset({"call_expression", "new_expression"}),
              import_types=frozenset({"import_statement"}), id_types=_ID_C),
     LangSpec(name="typescript", extensions=(".ts", ".tsx"),
-             func_types=frozenset({"function_declaration", "method_definition", "method_signature"}),
-             class_types=frozenset({"class_declaration", "interface_declaration"}),
+             func_types=frozenset({"function_declaration", "method_definition", "method_signature",
+                                   "abstract_method_signature"}),
+             class_types=frozenset({"class_declaration", "interface_declaration",
+                                    "abstract_class_declaration", "enum_declaration"}),
              call_types=frozenset({"call_expression", "new_expression"}),
              import_types=frozenset({"import_statement"}), id_types=_ID_C),
     LangSpec(name="go", extensions=(".go",),
@@ -178,12 +180,26 @@ class CodeAdapter:
                     else:
                         walk(child, stack, enclosing, depth + 1)
                     continue
-                # JS/TS `const f = (a) => ...` / `const f = function(){}` -> name from the LHS (R6-4).
-                if spec.name in ("javascript", "typescript") and t == "variable_declarator":
+                # JS/TS `const f = (a) => ...` / `const f = function(){}` -> name from the LHS (R6-4);
+                # and a class-field arrow `handleClick = (e) => {}` -> a method named from the field (R7-8).
+                if spec.name in ("javascript", "typescript") and t in (
+                        "variable_declarator", "field_definition", "public_field_definition"):
                     fname = self._arrow_decl(child)
                     if fname:
-                        u = make_node(child, ".".join(stack + [fname]), "method" if in_class else "function")
-                        walk(child, stack + [fname], u, depth + 1)
+                        is_field = t != "variable_declarator"
+                        kind = "method" if (in_class or is_field) else "function"
+                        u = make_node(child, ".".join(stack + [fname]), kind)
+                        walk(child, stack + [fname], u, depth + 1, in_class=in_class)
+                    else:
+                        walk(child, stack, enclosing, depth + 1, in_class)
+                    continue
+                # TS `namespace A {}` / `module A.B {}` -> a (non-method) scope so members qualify as
+                # A.run / A.B.run instead of fusing across namespaces (R7-5).
+                if spec.name in ("javascript", "typescript") and t in ("internal_module", "module", "namespace"):
+                    nm = child.child_by_field_name("name")
+                    nsname = nm.text.decode("utf-8", "replace") if nm is not None else self._first_id(child, spec)
+                    if nsname:
+                        walk(child, stack + [nsname.split(".")[-1]], enclosing, depth + 1, in_class=False)
                     else:
                         walk(child, stack, enclosing, depth + 1, in_class)
                     continue
@@ -296,13 +312,35 @@ class CodeAdapter:
         return out
 
     @staticmethod
-    def _rust_impl(node):
-        """``impl [Trait for] Type`` -> (implementing type, trait or None). The last direct
-        type_identifier is the type; a preceding one is the trait (R6-7)."""
-        ids = [c.text.decode("utf-8", "replace") for c in node.named_children if c.type == "type_identifier"]
-        if not ids:
-            return None, None
-        return ids[-1], (ids[0] if len(ids) > 1 else None)
+    def _head_type(node):
+        """The head type_identifier of a type position, looking through generic_type (`Wrap<T>`),
+        scoped_type_identifier (`a::B`) and reference_type (`&T`) so generic impls resolve (R7-2)."""
+        if node is None:
+            return None
+        if node.type == "type_identifier":
+            return node.text.decode("utf-8", "replace").split("::")[-1]
+        stack = list(node.named_children)
+        while stack:                                   # BFS for the first type_identifier descendant
+            n = stack.pop(0)
+            if n.type == "type_identifier":
+                return n.text.decode("utf-8", "replace").split("::")[-1]
+            stack.extend(n.named_children)
+        return None
+
+    def _rust_impl(self, node):
+        """``impl [Trait for] Type`` -> (implementing type, trait or None). Uses the impl node's
+        ``type``/``trait`` fields (populated even for generic impls), falling back to the direct type
+        positions for older grammars (R6-7, R7-2)."""
+        impl_type = self._head_type(node.child_by_field_name("type"))
+        trait = self._head_type(node.child_by_field_name("trait"))
+        if impl_type is None:
+            cands = [c for c in node.named_children
+                     if c.type in ("type_identifier", "generic_type", "scoped_type_identifier")]
+            if cands:
+                impl_type = self._head_type(cands[-1])
+                if len(cands) > 1 and trait is None:
+                    trait = self._head_type(cands[0])
+        return impl_type, trait
 
     def _go_method(self, node):
         """Go ``func (r Recv) M()`` -> ('Recv', 'M'). Receiver is the first parameter_list (R6-6)."""

@@ -272,19 +272,22 @@ class Indexer:
         if "::" not in e.dst or e.dst.split("::", 1)[0] == src_file:
             return
         dst_name = e.dst.split("::", 1)[1].split(".")[-1]   # node `name` = last qualname component
-        # Carry the EXACT resolved dst uid so re-resolution rebuilds this precise edge even when the
-        # name is a duplicate qualname (R6-2); the by-name path is the fallback.
-        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence, dst_uid=e.dst)
+        # Carry the EXACT resolved dst uid (R6-2) and the true source (R7-3) so re-resolution rebuilds
+        # this precise edge at the right target and provenance; the by-name path is the fallback.
+        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence,
+                              dst_uid=e.dst, source=e.source)
 
-    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence, dst_uid=None) -> None:
+    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence,
+                         dst_uid=None, source=None) -> None:
         self.store.conn.execute(
-            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence, dst_uid) "
-            "VALUES(?, ?, ?, ?, ?, ?) "
+            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence, dst_uid, source) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src_uid, dst_name, relation) DO UPDATE SET "
             "  src_file = excluded.src_file, "
             "  confidence = MAX(pending_edges.confidence, excluded.confidence), "
-            "  dst_uid = COALESCE(excluded.dst_uid, pending_edges.dst_uid)",
-            (src_uid, src_file, dst_name, relation, confidence, dst_uid),
+            "  dst_uid = COALESCE(excluded.dst_uid, pending_edges.dst_uid), "
+            "  source = COALESCE(excluded.source, pending_edges.source)",
+            (src_uid, src_file, dst_name, relation, confidence, dst_uid, source),
         )
 
     def _resolve_pending(self, changed_rels: set, affected_names: set):
@@ -302,29 +305,31 @@ class Indexer:
         if not clauses:
             return 0, 0
         rows = self.store.conn.execute(
-            "SELECT src_uid, dst_name, relation, confidence, dst_uid FROM pending_edges WHERE "
+            "SELECT src_uid, dst_name, relation, confidence, dst_uid, source FROM pending_edges WHERE "
             + " OR ".join(clauses),
             params,
         ).fetchall()
         up = un = 0
         name_cache: dict = {}   # memoize name->uids: many pending rows share a target name (perf MR-14)
+
+        def unique_by_name(name):
+            if name not in name_cache:
+                name_cache[name] = self._resolve_name(name)
+            targets = name_cache[name]
+            return targets[0] if len(targets) == 1 else None
+
         for r in rows:
-            # A precise row carries the exact dst_uid (R6-2) — let _safe_edge confirm/upgrade it; only a
-            # coarse by-name row resolves through the name table. A precise target that vanished is NOT
-            # re-resolved by name (that would defeat the precise binding).
-            dst = r["dst_uid"]
-            if dst is None:
-                name = r["dst_name"]
-                if name not in name_cache:
-                    name_cache[name] = self._resolve_name(name)
-                targets = name_cache[name]
-                dst = targets[0] if len(targets) == 1 else None
-            if dst is not None and self._safe_edge(
-                r["src_uid"], dst, r["relation"], r["confidence"], "treesitter"
-            ):
-                up += 1
-            else:
-                un += 1
+            source = r["source"] or "treesitter"
+            rel, conf, src = r["relation"], r["confidence"], r["src_uid"]
+            # Prefer the exact dst_uid for a precise row (R6-2); fall back to a UNIQUE by-name match if
+            # that target no longer resolves (e.g. the callee moved file behind a re-export — R7-7), and
+            # for coarse rows (no dst_uid) resolve by name.
+            ok = r["dst_uid"] is not None and self._safe_edge(src, r["dst_uid"], rel, conf, source)
+            if not ok:
+                dst = unique_by_name(r["dst_name"])
+                ok = dst is not None and self._safe_edge(src, dst, rel, conf, source)
+            up += 1 if ok else 0
+            un += 0 if ok else 1
         return up, un
 
     def _resolve_name(self, name: str) -> list:

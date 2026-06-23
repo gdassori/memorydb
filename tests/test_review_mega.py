@@ -356,7 +356,11 @@ def test_r6_9_dotted_locate_offers_bare_tail():
 
 def test_r6_13_stopwords_not_grounded_as_symbol():
     from memorydb.planner import RetrievalPlanner
-    assert RetrievalPlanner._candidates("where is the call used?") == []   # all stopwords dropped
+    c = RetrievalPlanner._candidates("where is the call used?")
+    assert "where" not in c and "the" not in c and "is" not in c           # pure glue dropped
+    # identifier-plausible verbs are KEPT so a symbol literally named `call`/`get` can still be located
+    # (R7-1); the index grounding rejects them when no such symbol exists.
+    assert "call" in c
     assert "send_notification" in RetrievalPlanner._candidates("where is send_notification used?")
 
 
@@ -456,6 +460,50 @@ def test_r6_rust_impl_scope_no_dup_and_inherits():
     assert [k for k in nodes if k.startswith("Point") and "::" not in k].count("Point") == 1  # R6-16 no dup
     assert nodes.get("Point.area") == "method" and nodes.get("Point.new") == "method"  # R6-7 named by type
     assert ("Point", "INHERITS", "Shape") in edges                           # R6-7 impl-for-trait
+
+
+# --- Round 7: regressions from round-6 + multilang gaps -------------------------------------
+def test_r7_1_locate_grounds_stopword_named_symbol():
+    from memorydb.planner import RetrievalPlanner
+    repo = _repo({"b.py": "def get():\n    return 1\n",
+                  "a.py": "from b import get\n\ndef g():\n    return get()\n"})
+    s = Store(":memory:")
+    from memorydb import HashingEmbedder
+    Indexer(s, [PythonResolver()], HashingEmbedder()).index(repo)
+    res = RetrievalPlanner(s, HashingEmbedder()).retrieve("where is get used?")   # `get` is groundable now
+    assert res["intent"] == "LOCATE" and "a.py::g" in {r["src_uid"] for r in res["references"]}
+
+
+def test_r7_3_precise_edge_keeps_python_ast_source():
+    repo = _repo({"b.py": "def foo():\n    return 1\n", "a.py": "from b import foo\n\ndef g():\n    return foo()\n"})
+    s = Store(":memory:")
+    Indexer(s, [PythonResolver(), FakeCoarse()]).index(repo)        # precise python-ast 0.97 + coarse 0.6
+    src = s.conn.execute(
+        "SELECT e.source FROM edges e JOIN nodes a ON a.id=e.src JOIN nodes b ON b.id=e.dst "
+        "WHERE a.uid='a.py::g' AND b.uid='b.py::foo'").fetchone()[0]
+    assert src == "python-ast"                                      # re-resolve didn't clobber to treesitter
+
+
+def test_r7_2_rust_generic_impl():
+    if not HAVE_CODE:
+        return
+    nodes, edges = _extract("g.rs",
+        "trait Show<T> { fn show(&self); }\nstruct Wrap<T>{x:T}\n"
+        "impl<T> Show<T> for Wrap<T> where T: Clone { fn show(&self){} }\nimpl<T> Wrap<T> { fn go(&self){} }\n")
+    assert nodes.get("Wrap.show") == "method" and nodes.get("Wrap.go") == "method"   # scoped to the type
+    assert ("Wrap", "INHERITS", "Show") in edges
+
+
+def test_r7_ts_abstract_namespace_enum_fieldarrow():
+    if not HAVE_CODE:
+        return
+    nodes, _ = _extract("a.ts",
+        "abstract class Base { abstract foo(): void; bar(){} }\nnamespace NS { export function run(){} }\n"
+        "enum Color { Red }\nclass C { handle = (e) => 1 }\n")
+    assert nodes.get("Base") == "class" and nodes.get("Base.bar") == "method"   # R7-4 abstract class
+    assert nodes.get("NS.run") == "function"                                    # R7-5 namespace scope
+    assert nodes.get("Color") == "class"                                        # R7-6 enum
+    assert nodes.get("C.handle") == "method"                                    # R7-8 class-field arrow
 
 
 if __name__ == "__main__":

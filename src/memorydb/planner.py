@@ -22,14 +22,15 @@ _LOCATE = re.compile(
 _EXPLAIN = re.compile(r"\b(how|why|explain|describe|overview|work|works|flow)\b", re.I)
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.:]*")
 
-# Query words that must never be grounded as a symbol — the LOCATE/EXPLAIN verbs plus common
-# articles/prepositions/interrogatives. Without this a question word that happens to name a real
-# symbol (e.g. `call`, `flow`, `use`) gets matched as the target (R6-13).
+# Pure query glue — interrogatives / articles / prepositions / auxiliaries that are NEVER identifiers.
+# Dropping these stops a question word from being grounded as the target (R6-13). The LOCATE/EXPLAIN
+# verbs (use/call/get/set/work/flow/reference/invoke/...) are deliberately NOT here: they are common
+# real method names, so we keep them and let the index grounding (WHERE name=:t) reject non-matches —
+# otherwise a symbol literally named `get`/`call` could never be located (R7-1).
 _STOPWORDS = frozenset({
-    "where", "who", "which", "what", "when", "how", "why", "is", "are", "the", "a", "an", "of", "in",
-    "to", "on", "for", "and", "or", "do", "does", "this", "that", "it", "use", "used", "uses", "call",
-    "calls", "called", "reference", "references", "invoke", "invokes", "explain", "describe", "overview",
-    "work", "works", "flow", "get", "set", "from",
+    "where", "who", "which", "what", "when", "whose", "how", "why", "is", "are", "was", "were", "be",
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "do", "does", "did", "this",
+    "that", "these", "those", "it", "its", "by", "with", "as",
 })
 
 
