@@ -1,0 +1,120 @@
+"""Regression tests for the 2026-06-23 mega-review fixes (MR-1..MR-23).
+See docs/specs/adversarial-review-2026-06-23-mega.md. All zero-dep (PythonResolver is stdlib)."""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from memorydb import Indexer, Node, Store  # noqa: E402
+from memorydb.adapters.code import Extraction  # noqa: E402
+from memorydb.adapters.code.python_resolver import PythonResolver  # noqa: E402
+
+
+def _repo(files: dict) -> str:
+    d = tempfile.mkdtemp()
+    for name, text in files.items():
+        sub = os.path.join(d, os.path.dirname(name))
+        if os.path.dirname(name):
+            os.makedirs(sub, exist_ok=True)
+        with open(os.path.join(d, name), "w") as fh:
+            fh.write(text)
+    return d
+
+
+def _xconf(s, src, dst):
+    row = s.conn.execute(
+        "SELECT e.confidence FROM edges e JOIN nodes a ON a.id=e.src JOIN nodes b ON b.id=e.dst "
+        "WHERE a.uid=? AND b.uid=? AND e.relation='CALLS'", (src, dst)).fetchone()
+    return row[0] if row else None
+
+
+# --- MR-1: a hostile/deeply-nested .py must not abort the whole index -----------------------
+def test_mr1_deep_file_does_not_abort_index():
+    repo = _repo({
+        "deep.py": "x = " + "(" * 2500 + "1" + ")" * 2500 + "\n",   # deep AST -> RecursionError risk
+        "good.py": "def g():\n    return 1\n",
+    })
+    s = Store(":memory:")
+    rep = Indexer(s, [PythonResolver()]).index(repo)                 # must not raise
+    assert s.id_for("good.py::g") is not None                       # healthy file still indexed
+    assert rep.files_indexed == 2
+
+
+def test_mr1_extractor_exception_is_isolated():
+    class Boom:
+        repo_root = "."
+        def handles(self, p): return p.endswith(".py")
+        def lang_of(self, p): return "python"
+        def extract(self, p): raise RuntimeError("hostile extractor")
+
+    repo = _repo({"a.py": "def a():\n    return 1\n"})
+    s = Store(":memory:")
+    rep = Indexer(s, [Boom(), PythonResolver()]).index(repo)         # Boom must not abort the run
+    assert s.id_for("a.py::a") is not None and rep.files_indexed == 1
+
+
+# --- MR-2: index() is atomic (one transaction) + force re-index -----------------------------
+def test_mr2_index_rolls_back_on_error():
+    repo = _repo({"a.py": "def a():\n    return 1\n"})
+    s = Store(":memory:")
+    idx = Indexer(s, [PythonResolver()])
+    idx._resolve_pending = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash mid-index"))
+    try:
+        idx.index(repo)
+        assert False, "expected the injected error to propagate"
+    except RuntimeError:
+        pass
+    # the whole run rolled back — nothing committed, so a re-index is clean (no durable sha skip-token)
+    assert s.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 0
+
+
+def test_mr2_force_reindexes_everything():
+    repo = _repo({"a.py": "def a():\n    return 1\n", "b.py": "def b():\n    return 2\n"})
+    s = Store(":memory:")
+    idx = Indexer(s, [PythonResolver()])
+    idx.index(repo)
+    assert idx.index(repo).files_skipped == 2                       # unchanged -> skipped
+    assert idx.index(repo, force=True).files_indexed == 2           # force ignores the sha skip
+
+
+# --- MR-3: editing a callee body must NOT downgrade a precise cross-file edge ----------------
+class FakeCoarse:
+    """Emits ONLY the coarse 0.6 by-name pending for a.py::g -> foo (like the tree-sitter adapter)."""
+    repo_root = "."
+    def handles(self, p): return p.endswith(".py")
+    def lang_of(self, p): return "python"
+    def extract(self, p):
+        rel = os.path.relpath(p, self.repo_root).replace(os.sep, "/")
+        if os.path.basename(rel) == "a.py":
+            return Extraction(pending=[("a.py::g", "foo", "CALLS", 0.6)])
+        return Extraction()
+
+
+def test_mr3_callee_edit_keeps_precise_confidence():
+    repo = _repo({"b.py": "def foo():\n    return 1\n", "a.py": "from b import foo\n\ndef g():\n    return foo()\n"})
+    s = Store(":memory:")
+    idx = Indexer(s, [PythonResolver(), FakeCoarse()])              # precise 0.97 + coarse 0.6
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "b.py::foo") == 0.97                # precise wins initially
+    # edit ONLY the callee's body (foo still defined) — the unchanged caller is skipped
+    with open(os.path.join(repo, "b.py"), "w") as fh:
+        fh.write("def foo():\n    return 99  # body changed\n")
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "b.py::foo") == 0.97                # was the MR-3 bug: downgraded to 0.6
+
+
+if __name__ == "__main__":
+    tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
+    for name, fn in tests.items():
+        try:
+            fn()
+            print(f"ok  {name}")
+        except Exception as e:  # noqa
+            import traceback
+            print(f"FAIL {name}: {e}")
+            traceback.print_exc()
+    print("done")

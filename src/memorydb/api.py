@@ -139,13 +139,14 @@ class MemoryDB:
         self._store.commit()
 
     # --- ingestion ---------------------------------------------------------
-    def index(self, root: str, *, embed: bool = True) -> IndexReport:
+    def index(self, root: str, *, embed: bool = True, force: bool = False) -> IndexReport:
         """Walk ``root``, extract symbols/edges into the substrate, then (re)embed dirty nodes.
         Incremental: unchanged files are skipped, deletions are reaped (see the Indexer). Pass
         ``embed=False`` to ingest the graph now and defer embedding to a later
-        ``refresh_embeddings()`` (e.g. the CLI's ``--no-embed``)."""
+        ``refresh_embeddings()`` (e.g. the CLI's ``--no-embed``); ``force=True`` re-indexes every file
+        (ignores the sha256 skip — a recovery escape hatch)."""
         self._ensure_open()
-        rep = self._indexer.index(root)
+        rep = self._indexer.index(root, force=force)
         if embed:
             rep.embedded = self.refresh_embeddings().embedded
         return rep

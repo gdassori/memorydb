@@ -65,7 +65,7 @@ class Indexer:
         self.embedder = embedder
         self.ignore = ignore or IgnoreMatcher()
 
-    def index(self, root: str) -> IndexReport:
+    def index(self, root: str, *, force: bool = False) -> IndexReport:
         rep = IndexReport()
         root = os.path.abspath(os.path.expanduser(root))  # so "~/src/repo" works as documented (PR1-4)
         for ex in self.extractors:            # keep relpaths consistent with the indexed root
@@ -81,70 +81,81 @@ class Indexer:
         # callee file is edited — R3L-1).
         affected_names: set = set()
 
-        # Deletions: a file node exists but the file is gone.
-        for rel in set(existing) - set(disk):
-            affected_names |= self._symbol_names_of(rel)
-            self._delete_file(rel)
-            rep.files_deleted += 1
+        # The whole graph ingestion (deletions + both passes + pending resolution) runs in ONE
+        # transaction and commits exactly once. A crash mid-run therefore rolls back cleanly and can
+        # never leave a file's sha256 skip-token durable ahead of the edges it gates (data-integrity
+        # MR-2). Same-connection reads in pass 2 see pass 1's uncommitted writes.
+        try:
+            # Deletions: a file node exists but the file is gone.
+            for rel in set(existing) - set(disk):
+                affected_names |= self._symbol_names_of(rel)
+                self._delete_file(rel)
+                rep.files_deleted += 1
 
-        # Diff by content hash.
-        changed = []
-        for rel, path in disk.items():
-            try:
-                data = open(path, "rb").read()
-            except OSError:
-                continue
-            sha = hashlib.sha256(data).hexdigest()
-            if existing.get(rel, {}).get("sha256") == sha:
-                rep.files_skipped += 1
-                continue
-            changed.append((rel, path, sha))
+            # Diff by content hash (force=True re-indexes everything — a recovery escape hatch).
+            changed = []
+            for rel, path in disk.items():
+                try:
+                    data = open(path, "rb").read()
+                except OSError:
+                    continue
+                sha = hashlib.sha256(data).hexdigest()
+                if not force and existing.get(rel, {}).get("sha256") == sha:
+                    rep.files_skipped += 1
+                    continue
+                changed.append((rel, path, sha))
 
-        # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
-        deferred = []
-        for rel, path, sha in changed:
-            affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
-            self._delete_file(rel)            # drop any prior symbols/file node for this path
-            merged = self._extract_all(path)
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                mtime = None
-            # mtime is the recency signal reused by the FILTER builder / hybrid ranker (C5); sha256
-            # remains the authoritative change check.
-            self.store.upsert_node(Node(uid=rel, type="file", name=os.path.basename(rel),
-                                        attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
-            for nd in merged.nodes:
-                self.store.upsert_node(nd)
-                affected_names.add(nd.name)   # names this file now defines
-                rep.nodes_upserted += 1
-            deferred.append((rel, merged))
-            rep.files_indexed += 1
-        self.store.commit()
+            # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
+            deferred = []
+            for rel, path, sha in changed:
+                affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
+                self._delete_file(rel)            # drop any prior symbols/file node for this path
+                merged = self._extract_all(path)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    mtime = None
+                # mtime is the recency signal reused by the FILTER builder / hybrid ranker (C5); sha256
+                # remains the authoritative change check.
+                self.store.upsert_node(Node(uid=rel, type="file", name=os.path.basename(rel),
+                                            attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
+                for nd in merged.nodes:
+                    self.store.upsert_node(nd)
+                    affected_names.add(nd.name)   # names this file now defines
+                    rep.nodes_upserted += 1
+                deferred.append((rel, merged))
+                rep.files_indexed += 1
 
-        # PASS 2 — in-file precise edges (dst is already a uid) now; by-name edges are persisted to
-        # pending_edges (C2) and resolved in one global pass below.
-        changed_rels: set = set()
-        for rel, merged in deferred:
-            changed_rels.add(rel)
-            for e in merged.edges:
-                if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
-                    rep.edges_upserted += 1
-                else:
-                    rep.edges_unresolved += 1
-            for (src_uid, dst_name, relation, conf) in merged.pending:
-                self._persist_pending(src_uid, rel, dst_name, relation, conf)
-        self.store.commit()
+            # PASS 2 — in-file precise edges (dst is already a uid) now; by-name edges are persisted to
+            # pending_edges (C2) and resolved in one global pass below.
+            changed_rels: set = set()
+            for rel, merged in deferred:
+                changed_rels.add(rel)
+                for e in merged.edges:
+                    if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
+                        rep.edges_upserted += 1
+                    else:
+                        rep.edges_unresolved += 1
+                    # A precise CROSS-FILE edge is also recorded as a durable pending row (at its true
+                    # confidence) so that editing the callee file — which cascade-deletes the edge while
+                    # the unchanged caller is skipped — rebuilds it at >=0.97 instead of falling back to
+                    # a coarse 0.6 pending (data-integrity MR-3).
+                    self._persist_cross_file(e)
+                for (src_uid, dst_name, relation, conf) in merged.pending:
+                    self._persist_pending(src_uid, rel, dst_name, relation, conf)
 
-        # Resolve every pending edge that could have changed this run: emitted by a (re)indexed file,
-        # OR (in any unchanged file) targeting a name that just appeared/disappeared. The second case
-        # is what restores a caller's cross-file edge after its callee file was edited (R3L-1).
-        up, un = self._resolve_pending(changed_rels, affected_names)
-        rep.edges_upserted += up
-        rep.edges_unresolved += un
-        self.store.commit()
+            # Resolve every pending edge that could have changed this run: emitted by a (re)indexed
+            # file, OR (in any unchanged file) targeting a name that just appeared/disappeared.
+            up, un = self._resolve_pending(changed_rels, affected_names)
+            rep.edges_upserted += up
+            rep.edges_unresolved += un
+            self.store.commit()
+        except Exception:
+            self.store.conn.rollback()
+            raise
 
-        # Embeddings (graph-aware, TD-006): only the dirty nodes.
+        # Embeddings (graph-aware, TD-006): only the dirty nodes. Outside the atomic graph unit — a
+        # failed embed just leaves nodes dirty for the next refresh.
         if self.embedder is not None:
             from .embedding_pipeline import EmbeddingPipeline
             rep.embedded = EmbeddingPipeline(self.store, self.embedder).refresh().embedded
@@ -174,7 +185,10 @@ class Indexer:
         for ex in self.extractors:
             if not getattr(ex, "handles", lambda p: True)(path):
                 continue
-            res = ex.extract(path)
+            try:
+                res = ex.extract(path)            # one extractor must never abort the whole run (MR-1)
+            except Exception:
+                continue
             m.nodes += res.nodes
             m.edges += res.edges
             m.pending += res.pending
@@ -226,6 +240,16 @@ class Indexer:
             "SELECT DISTINCT name FROM nodes WHERE file_uid = ? AND type != 'file'", (rel,)
         ).fetchall()
         return {r[0] for r in rows}
+
+    def _persist_cross_file(self, e) -> None:
+        """Record a precise CROSS-FILE direct edge as a durable pending row so it survives a callee
+        re-index at its true confidence (MR-3). In-file edges are skipped — they are re-emitted
+        whenever their own file changes."""
+        src_file = e.src.split("::", 1)[0]
+        if "::" not in e.dst or e.dst.split("::", 1)[0] == src_file:
+            return
+        dst_name = e.dst.split("::", 1)[1].split(".")[-1]   # node `name` = last qualname component
+        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence)
 
     def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence) -> None:
         self.store.conn.execute(

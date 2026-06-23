@@ -31,6 +31,9 @@ _IMPORT_ATTR = 0.95 # attribute on an imported module alias: `import m` -> m.f()
 _SELF_METHOD = 0.9  # self.method() / cls.method() resolved against the enclosing class
 _STAR = 0.5         # candidate via a single `from m import *`
 
+_MAX_DEPTH = 200    # AST nesting cap — a hostile deeply-nested file must not blow the recursion limit
+                    # and abort the index (security MR-1; mirrors the CodeAdapter's _MAX_WALK_DEPTH).
+
 
 def _module_relpath(dotted: str) -> str:
     return dotted.replace(".", "/") + ".py"
@@ -56,9 +59,11 @@ class PythonResolver:
                 text = fh.read().decode("utf-8", "replace")
             tree = ast.parse(text)
             stab = symtable.symtable(text, rel, "exec")
-        except (SyntaxError, ValueError, OSError):
-            return Extraction()  # never fail the index on a bad file
-        return _Extractor(rel, text, tree, stab).run()
+            return _Extractor(rel, text, tree, stab).run()
+        except Exception:
+            # Broad on purpose (MR-1): a pathological file (deep AST -> RecursionError, which is a
+            # RuntimeError not in the old narrow tuple) must yield an empty Extraction, not abort.
+            return Extraction()
 
 
 class _Extractor:
@@ -115,7 +120,9 @@ class _Extractor:
                         self.imports[a.asname or a.name] = ("sym", target, a.name)
 
     # --- defs / nodes ------------------------------------------------------
-    def _collect_defs(self, node: ast.AST, stack: list) -> None:
+    def _collect_defs(self, node: ast.AST, stack: list, depth: int = 0) -> None:
+        if depth > _MAX_DEPTH:
+            return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = ".".join(stack + [child.name])
@@ -138,7 +145,7 @@ class _Extractor:
                     self.class_methods[qual] = {
                         m.name for m in child.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                     }
-                self._collect_defs(child, stack + [child.name])
+                self._collect_defs(child, stack + [child.name], depth + 1)
 
     def _signature(self, node: ast.AST) -> str:
         lines = self.text.splitlines()
@@ -146,7 +153,10 @@ class _Extractor:
         return lines[i].strip() if 0 <= i < len(lines) else ""
 
     # --- edges -------------------------------------------------------------
-    def _walk_edges(self, node: ast.AST, stack: list, classq: Optional[str], enclosing_uid: Optional[str]) -> None:
+    def _walk_edges(self, node: ast.AST, stack: list, classq: Optional[str],
+                    enclosing_uid: Optional[str], depth: int = 0) -> None:
+        if depth > _MAX_DEPTH:    # recurses into every node, incl. deep attr/call chains (MR-1)
+            return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = ".".join(stack + [child.name])
@@ -157,18 +167,18 @@ class _Extractor:
                         if r:
                             self.edges.append(Edge(src=uid, dst=r[0], relation=Rel.INHERITS,
                                                    confidence=r[1], source="python-ast"))
-                    self._walk_edges(child, stack + [child.name], qual, uid)
+                    self._walk_edges(child, stack + [child.name], qual, uid, depth + 1)
                 else:
-                    self._walk_edges(child, stack + [child.name], classq, uid)
+                    self._walk_edges(child, stack + [child.name], classq, uid, depth + 1)
             elif isinstance(child, ast.Call):
                 if enclosing_uid:
                     r = self._resolve(child.func, stack, classq)
                     if r:
                         self.edges.append(Edge(src=enclosing_uid, dst=r[0], relation=Rel.CALLS,
                                                confidence=r[1], source="python-ast"))
-                self._walk_edges(child, stack, classq, enclosing_uid)
+                self._walk_edges(child, stack, classq, enclosing_uid, depth + 1)
             else:
-                self._walk_edges(child, stack, classq, enclosing_uid)
+                self._walk_edges(child, stack, classq, enclosing_uid, depth + 1)
 
     def _resolve(self, fn: ast.AST, stack: list, classq: Optional[str]):
         """Resolve a callee/base expression to ``(target_uid, confidence)`` or ``None`` (skip)."""
@@ -200,7 +210,9 @@ class _Extractor:
         resolving a call whose name is actually a local (shadowing a module-level def of the same name)."""
         out: dict = {}
 
-        def walk(table, stack):
+        def walk(table, stack, depth=0):
+            if depth > _MAX_DEPTH:
+                return
             if table.get_type() == "function":
                 locs = set()
                 for sym in table.get_symbols():
@@ -212,7 +224,7 @@ class _Extractor:
                         continue
                 out[".".join(stack)] = locs
             for ch in table.get_children():
-                walk(ch, stack + [ch.get_name()])
+                walk(ch, stack + [ch.get_name()], depth + 1)
 
         for ch in stab.get_children():
             walk(ch, [ch.get_name()])

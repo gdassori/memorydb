@@ -46,6 +46,7 @@ def _build_parser() -> _Parser:
     s = sub.add_parser("index", help="walk a path and ingest symbols + edges")
     s.add_argument("path")
     s.add_argument("--no-embed", action="store_true", help="ingest the graph but defer embedding")
+    s.add_argument("--force", action="store_true", help="re-index every file (ignore the sha256 skip)")
     s.set_defaults(func=_cmd_index)
 
     s = sub.add_parser("query", help="route a question by intent (LOCATE/EXPLAIN)")
@@ -142,7 +143,7 @@ def _cmd_index(args) -> int:
         if not os.path.exists(args.path):
             print(f"error: path not found: {args.path}", file=sys.stderr)
             return 2
-        rep = db.index(args.path, embed=not args.no_embed)
+        rep = db.index(args.path, embed=not args.no_embed, force=args.force)
         print(f"indexed {rep.files_indexed} files "
               f"({rep.files_skipped} unchanged, {rep.files_deleted} removed) · "
               f"{rep.nodes_upserted} symbols · {rep.edges_upserted} edges "
