@@ -25,22 +25,26 @@ from .vector import make_vector_index
 
 
 class ExtractorRegistry:
-    """Builds the default set of extractors. Today that is the tree-sitter ``CodeAdapter`` when the
-    ``[code]`` extra is installed; otherwise an empty list (the facade still opens and runs — it just
-    indexes no code). Later specs (e.g. python-precise-resolver) register additional extractors here."""
+    """Builds the default set of extractors: the multilang tree-sitter ``CodeAdapter`` (when the
+    ``[code]`` extra is installed) plus the stdlib ``PythonResolver`` (always). Python files get
+    precise ast/symtable edges that supersede the coarse tree-sitter ones via MAX-confidence upsert;
+    other languages get coarse edges only. With no ``[code]`` extra, Python is still fully handled."""
 
     @staticmethod
     def default() -> list:
+        from .adapters.code.python_resolver import PythonResolver
+        extractors: list = []
         try:
             from .adapters.code import CodeAdapter
-            return [CodeAdapter()]
+            extractors.append(CodeAdapter())
         except NotImplementedError:
             warnings.warn(
-                "MemoryDB: the [code] extra is not installed, so no code extractor is active — "
-                "index() will ingest nothing. Run: pip install -e '.[code]'  (tree-sitter).",
+                "MemoryDB: the [code] extra is not installed — only Python is indexed (precise "
+                "ast/symtable resolver). For other languages run: pip install -e '.[code]' (tree-sitter).",
                 stacklevel=2,
             )
-            return []
+        extractors.append(PythonResolver())  # stdlib, no extra required
+        return extractors
 
 
 class ContextResult(BaseModel):
@@ -135,13 +139,14 @@ class MemoryDB:
         self._store.commit()
 
     # --- ingestion ---------------------------------------------------------
-    def index(self, root: str, *, embed: bool = True) -> IndexReport:
+    def index(self, root: str, *, embed: bool = True, force: bool = False) -> IndexReport:
         """Walk ``root``, extract symbols/edges into the substrate, then (re)embed dirty nodes.
         Incremental: unchanged files are skipped, deletions are reaped (see the Indexer). Pass
         ``embed=False`` to ingest the graph now and defer embedding to a later
-        ``refresh_embeddings()`` (e.g. the CLI's ``--no-embed``)."""
+        ``refresh_embeddings()`` (e.g. the CLI's ``--no-embed``); ``force=True`` re-indexes every file
+        (ignores the sha256 skip — a recovery escape hatch)."""
         self._ensure_open()
-        rep = self._indexer.index(root)
+        rep = self._indexer.index(root, force=force)
         if embed:
             rep.embedded = self.refresh_embeddings().embedded
         return rep
@@ -192,12 +197,14 @@ class MemoryDB:
         return self._pack_blocks(blocks, budget_tokens, intent)
 
     def _explain_blocks(self, result: dict):
-        """One block per node, seeds first (best vector match), then the rest by id — the order the
-        planner already considers most relevant."""
+        """One block per node, seeds first (best vector match), then the rest ordered by uid — the
+        churn-invariant key, not node id which the indexer renumbers on re-index (MR-17, matching the
+        eval ranker's R3L-4 fix)."""
         nodes = {n["id"]: n for n in result.get("nodes", [])}
         seeds = [s for s in result.get("seeds", []) if s in nodes]
-        ordered = seeds + [nid for nid in sorted(nodes) if nid not in set(seeds)]
-        return [(nodes[nid]["uid"], self._render_node(nodes[nid])) for nid in ordered]
+        seen = set(seeds)
+        rest = sorted((nid for nid in nodes if nid not in seen), key=lambda nid: nodes[nid]["uid"])
+        return [(nodes[nid]["uid"], self._render_node(nodes[nid])) for nid in seeds + rest]
 
     @staticmethod
     def _locate_blocks(result: dict):

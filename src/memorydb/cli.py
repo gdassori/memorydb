@@ -46,6 +46,7 @@ def _build_parser() -> _Parser:
     s = sub.add_parser("index", help="walk a path and ingest symbols + edges")
     s.add_argument("path")
     s.add_argument("--no-embed", action="store_true", help="ingest the graph but defer embedding")
+    s.add_argument("--force", action="store_true", help="re-index every file (ignore the sha256 skip)")
     s.set_defaults(func=_cmd_index)
 
     s = sub.add_parser("query", help="route a question by intent (LOCATE/EXPLAIN)")
@@ -124,9 +125,11 @@ def _node_count(db: MemoryDB) -> int:
     return db.store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
 
 
-def _no_data(db: MemoryDB) -> bool:
+def _no_data(db: MemoryDB, as_json: bool = False) -> bool:
     if _node_count(db) == 0:
         print("no data — run `memorydb index <path>` first.", file=sys.stderr)
+        if as_json:
+            print("{}")   # emit a valid (empty) JSON document so a --json consumer doesn't choke (R6-15)
         return True
     return False
 
@@ -142,7 +145,7 @@ def _cmd_index(args) -> int:
         if not os.path.exists(args.path):
             print(f"error: path not found: {args.path}", file=sys.stderr)
             return 2
-        rep = db.index(args.path, embed=not args.no_embed)
+        rep = db.index(args.path, embed=not args.no_embed, force=args.force)
         print(f"indexed {rep.files_indexed} files "
               f"({rep.files_skipped} unchanged, {rep.files_deleted} removed) · "
               f"{rep.nodes_upserted} symbols · {rep.edges_upserted} edges "
@@ -155,7 +158,7 @@ def _cmd_index(args) -> int:
 def _cmd_query(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         if args.context:
             ctx = db.ask(args.text, k=args.k, depth=args.depth, as_context=True, budget_tokens=args.budget)
@@ -171,7 +174,7 @@ def _cmd_query(args) -> int:
 def _cmd_locate(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         refs = db.locate(args.symbol)
         if args.json:
@@ -191,7 +194,7 @@ def _cmd_locate(args) -> int:
 def _cmd_explain(args) -> int:
     db = _open(args)
     try:
-        if _no_data(db):
+        if _no_data(db, args.json):
             return 0
         _render_result(db.explain(args.text, k=args.k, depth=args.depth), args.json)
         return 0

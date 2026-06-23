@@ -8,6 +8,7 @@ deletions and changes drop a file's symbols by `attrs.file_uid` (NOT a file-node
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from typing import Optional
@@ -65,7 +66,7 @@ class Indexer:
         self.embedder = embedder
         self.ignore = ignore or IgnoreMatcher()
 
-    def index(self, root: str) -> IndexReport:
+    def index(self, root: str, *, force: bool = False) -> IndexReport:
         rep = IndexReport()
         root = os.path.abspath(os.path.expanduser(root))  # so "~/src/repo" works as documented (PR1-4)
         for ex in self.extractors:            # keep relpaths consistent with the indexed root
@@ -81,70 +82,85 @@ class Indexer:
         # callee file is edited — R3L-1).
         affected_names: set = set()
 
-        # Deletions: a file node exists but the file is gone.
-        for rel in set(existing) - set(disk):
-            affected_names |= self._symbol_names_of(rel)
-            self._delete_file(rel)
-            rep.files_deleted += 1
+        # The whole graph ingestion (deletions + both passes + pending resolution) runs in ONE
+        # transaction and commits exactly once. A crash mid-run therefore rolls back cleanly and can
+        # never leave a file's sha256 skip-token durable ahead of the edges it gates (data-integrity
+        # MR-2). Same-connection reads in pass 2 see pass 1's uncommitted writes.
+        try:
+            # Deletions: a file node exists but the file is gone.
+            for rel in set(existing) - set(disk):
+                affected_names |= self._symbol_names_of(rel)
+                self._delete_file(rel)
+                rep.files_deleted += 1
 
-        # Diff by content hash.
-        changed = []
-        for rel, path in disk.items():
-            try:
-                data = open(path, "rb").read()
-            except OSError:
-                continue
-            sha = hashlib.sha256(data).hexdigest()
-            if existing.get(rel, {}).get("sha256") == sha:
-                rep.files_skipped += 1
-                continue
-            changed.append((rel, path, sha))
+            # Diff by content hash (force=True re-indexes everything — a recovery escape hatch). The
+            # bytes read here for hashing are reused by the extractors (avoids re-reading; perf MR-15).
+            changed = []
+            for rel, path in disk.items():
+                try:
+                    with open(path, "rb") as fh:   # context manager: no leaked handle (MR-21)
+                        data = fh.read()
+                except OSError:
+                    continue
+                sha = hashlib.sha256(data).hexdigest()
+                if not force and existing.get(rel, {}).get("sha256") == sha:
+                    rep.files_skipped += 1
+                    continue
+                changed.append((rel, path, sha, data))
 
-        # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
-        deferred = []
-        for rel, path, sha in changed:
-            affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
-            self._delete_file(rel)            # drop any prior symbols/file node for this path
-            merged = self._extract_all(path)
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                mtime = None
-            # mtime is the recency signal reused by the FILTER builder / hybrid ranker (C5); sha256
-            # remains the authoritative change check.
-            self.store.upsert_node(Node(uid=rel, type="file", name=os.path.basename(rel),
-                                        attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
-            for nd in merged.nodes:
-                self.store.upsert_node(nd)
-                affected_names.add(nd.name)   # names this file now defines
-                rep.nodes_upserted += 1
-            deferred.append((rel, merged))
-            rep.files_indexed += 1
-        self.store.commit()
+            # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
+            deferred = []
+            for rel, path, sha, data in changed:
+                affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
+                self._delete_file(rel)            # drop any prior symbols/file node for this path
+                merged = self._extract_all(path, data)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    mtime = None
+                # mtime is the recency signal reused by the FILTER builder / hybrid ranker (C5); sha256
+                # remains the authoritative change check.
+                self.store.upsert_node(Node(uid=rel, type="file", name=os.path.basename(rel),
+                                            attrs={"sha256": sha, "mtime": mtime, "lang": merged.lang}))
+                for nd in merged.nodes:
+                    self.store.upsert_node(nd)
+                    affected_names.add(nd.name)   # names this file now defines
+                    rep.nodes_upserted += 1
+                deferred.append((rel, merged))
+                rep.files_indexed += 1
 
-        # PASS 2 — in-file precise edges (dst is already a uid) now; by-name edges are persisted to
-        # pending_edges (C2) and resolved in one global pass below.
-        changed_rels: set = set()
-        for rel, merged in deferred:
-            changed_rels.add(rel)
-            for e in merged.edges:
-                if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
-                    rep.edges_upserted += 1
-                else:
-                    rep.edges_unresolved += 1
-            for (src_uid, dst_name, relation, conf) in merged.pending:
-                self._persist_pending(src_uid, rel, dst_name, relation, conf)
-        self.store.commit()
+            # PASS 2 — in-file precise edges (dst is already a uid) now; by-name edges are persisted to
+            # pending_edges (C2) and resolved in one global pass below.
+            changed_rels: set = set()
+            for rel, merged in deferred:
+                changed_rels.add(rel)
+                for e in merged.edges:
+                    if self._safe_edge(e.src, e.dst, e.relation, e.confidence, e.source):
+                        rep.edges_upserted += 1
+                        # Record a materialised CROSS-FILE edge as a durable pending row (at its true
+                        # confidence) so editing the callee file — which cascade-deletes the edge while
+                        # the unchanged caller is skipped — rebuilds it at >=0.97 instead of falling back
+                        # to a coarse 0.6 pending (MR-3). Only edges that ACTUALLY materialised are
+                        # persisted, so a skipped precise edge can't be re-resolved by-name onto a
+                        # different file (which would defeat MR-10's top-level binding).
+                        self._persist_cross_file(e)
+                    else:
+                        rep.edges_unresolved += 1
+                for (src_uid, dst_name, relation, conf) in merged.pending:
+                    self._persist_pending(src_uid, rel, dst_name, relation, conf)
 
-        # Resolve every pending edge that could have changed this run: emitted by a (re)indexed file,
-        # OR (in any unchanged file) targeting a name that just appeared/disappeared. The second case
-        # is what restores a caller's cross-file edge after its callee file was edited (R3L-1).
-        up, un = self._resolve_pending(changed_rels, affected_names)
-        rep.edges_upserted += up
-        rep.edges_unresolved += un
-        self.store.commit()
+            # Resolve every pending edge that could have changed this run: emitted by a (re)indexed
+            # file, OR (in any unchanged file) targeting a name that just appeared/disappeared.
+            up, un = self._resolve_pending(changed_rels, affected_names)
+            rep.edges_upserted += up
+            rep.edges_unresolved += un
+            self.store.commit()
+        except Exception:
+            self.store.conn.rollback()
+            raise
 
-        # Embeddings (graph-aware, TD-006): only the dirty nodes.
+        # Embeddings (graph-aware, TD-006): only the dirty nodes. Outside the atomic graph unit — a
+        # failed embed just leaves nodes dirty for the next refresh.
         if self.embedder is not None:
             from .embedding_pipeline import EmbeddingPipeline
             rep.embedded = EmbeddingPipeline(self.store, self.embedder).refresh().embedded
@@ -169,17 +185,49 @@ class Indexer:
     def _any_handles(self, path: str) -> bool:
         return any(getattr(ex, "handles", lambda p: True)(path) for ex in self.extractors)
 
-    def _extract_all(self, path: str) -> _Merged:
+    def _accepts_data(self, ex) -> bool:
+        """Whether ``ex.extract`` takes a ``data`` argument (cached per extractor). Lets the indexer
+        pass already-read bytes without breaking simpler extractors whose signature is ``extract(path)``."""
+        cache = self.__dict__.setdefault("_data_ok", {})
+        key = id(ex)
+        if key not in cache:
+            try:
+                params = inspect.signature(ex.extract).parameters
+                cache[key] = "data" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+            except (ValueError, TypeError):
+                cache[key] = False
+        return cache[key]
+
+    def _extract_all(self, path: str, data=None) -> _Merged:
         m = _Merged()
         for ex in self.extractors:
             if not getattr(ex, "handles", lambda p: True)(path):
                 continue
-            res = ex.extract(path)
+            try:
+                # Reuse the bytes already read for hashing when the extractor accepts them (perf MR-15);
+                # one extractor must never abort the whole run (MR-1).
+                if data is not None and self._accepts_data(ex):
+                    res = ex.extract(path, data=data)
+                else:
+                    res = ex.extract(path)
+            except Exception:
+                continue
             m.nodes += res.nodes
             m.edges += res.edges
             m.pending += res.pending
             if m.lang is None:
                 m.lang = getattr(ex, "lang_of", lambda p: None)(path)
+        # Multiple extractors (e.g. the coarse CodeAdapter + the precise PythonResolver) emit the same
+        # symbols under the same uid scheme — dedupe by uid so nodes_upserted isn't double-counted and
+        # we don't upsert a symbol twice. Edges intentionally are NOT deduped: they merge in the store
+        # by MAX-confidence, so the precise edge supersedes the coarse one for the same (src,dst,rel).
+        seen: set = set()
+        deduped: list = []
+        for nd in m.nodes:
+            if nd.uid not in seen:
+                seen.add(nd.uid)
+                deduped.append(nd)
+        m.nodes = deduped
         return m
 
     def _existing_files(self) -> dict:
@@ -216,20 +264,37 @@ class Indexer:
         ).fetchall()
         return {r[0] for r in rows}
 
-    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence) -> None:
+    def _persist_cross_file(self, e) -> None:
+        """Record a precise CROSS-FILE direct edge as a durable pending row so it survives a callee
+        re-index at its true confidence (MR-3). In-file edges are skipped — they are re-emitted
+        whenever their own file changes."""
+        src_file = e.src.split("::", 1)[0]
+        if "::" not in e.dst or e.dst.split("::", 1)[0] == src_file:
+            return
+        dst_name = e.dst.split("::", 1)[1].split(".")[-1]   # node `name` = last qualname component
+        # Carry the EXACT resolved dst uid (R6-2) and the true source (R7-3) so re-resolution rebuilds
+        # this precise edge at the right target and provenance; the by-name path is the fallback.
+        self._persist_pending(e.src, src_file, dst_name, e.relation, e.confidence,
+                              dst_uid=e.dst, source=e.source)
+
+    def _persist_pending(self, src_uid, src_file, dst_name, relation, confidence,
+                         dst_uid=None, source=None) -> None:
         self.store.conn.execute(
-            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence) "
-            "VALUES(?, ?, ?, ?, ?) "
+            "INSERT INTO pending_edges(src_uid, src_file, dst_name, relation, confidence, dst_uid, source) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src_uid, dst_name, relation) DO UPDATE SET "
             "  src_file = excluded.src_file, "
-            "  confidence = MAX(pending_edges.confidence, excluded.confidence)",
-            (src_uid, src_file, dst_name, relation, confidence),
+            "  confidence = MAX(pending_edges.confidence, excluded.confidence), "
+            "  dst_uid = COALESCE(excluded.dst_uid, pending_edges.dst_uid), "
+            "  source = COALESCE(excluded.source, pending_edges.source)",
+            (src_uid, src_file, dst_name, relation, confidence, dst_uid, source),
         )
 
     def _resolve_pending(self, changed_rels: set, affected_names: set):
-        """Resolve the candidate pending rows by name; returns (upserted, unresolved). Candidates are
-        rows from a (re)indexed file OR rows whose target name changed this run. Unique name match →
-        edge (MAX-confidence upsert); ambiguous/unknown → left pending for a future run."""
+        """Resolve the candidate pending rows; returns (upserted, unresolved). Candidates are rows from
+        a (re)indexed file OR rows whose target name changed this run. A precise row resolves to its
+        exact ``dst_uid`` (R6-2); otherwise a unique name match → edge; ambiguous/unknown → left
+        pending for a future run."""
         clauses, params = [], []
         if changed_rels:
             clauses.append("src_file IN (SELECT value FROM json_each(?))")
@@ -240,16 +305,31 @@ class Indexer:
         if not clauses:
             return 0, 0
         rows = self.store.conn.execute(
-            "SELECT src_uid, dst_name, relation, confidence FROM pending_edges WHERE "
+            "SELECT src_uid, dst_name, relation, confidence, dst_uid, source FROM pending_edges WHERE "
             + " OR ".join(clauses),
             params,
         ).fetchall()
         up = un = 0
+        name_cache: dict = {}   # memoize name->uids: many pending rows share a target name (perf MR-14)
+
+        def unique_by_name(name):
+            if name not in name_cache:
+                name_cache[name] = self._resolve_name(name)
+            targets = name_cache[name]
+            return targets[0] if len(targets) == 1 else None
+
         for r in rows:
-            targets = self._resolve_name(r["dst_name"])
-            if len(targets) == 1 and self._safe_edge(
-                r["src_uid"], targets[0], r["relation"], r["confidence"], "treesitter"
-            ):
+            source = r["source"] or "treesitter"
+            rel, conf, src = r["relation"], r["confidence"], r["src_uid"]
+            # A PRECISE row resolves ONLY to its exact dst_uid (R6-2) — NO by-name fallback: a globally
+            # unique name does not mean the caller's import points at that file, so a fallback would
+            # silently rebind a vanished precise edge to the wrong file at high confidence (R8-2, the
+            # MR-10 hazard). Coarse rows (no dst_uid) resolve through a unique by-name match.
+            if r["dst_uid"] is not None:
+                dst = r["dst_uid"]
+            else:
+                dst = unique_by_name(r["dst_name"])
+            if dst is not None and self._safe_edge(src, dst, rel, conf, source):
                 up += 1
             else:
                 un += 1
@@ -262,8 +342,22 @@ class Indexer:
         return [r["uid"] for r in rows]
 
     def _safe_edge(self, src_uid, dst_uid, relation, confidence, source) -> bool:
-        try:
-            self.store.upsert_edge(src_uid, dst_uid, relation, confidence=confidence, source=source)
-            return True
-        except KeyError:
-            return False
+        # Try the given dst, then its package form (an import target computed as <dir>.py::sym may be a
+        # package, whose defs are keyed <dir>/__init__.py::sym — MR-7). upsert_edge raises KeyError on a
+        # missing endpoint, which is the existence check — no extra pre-lookup id_for per edge (R6-21).
+        for cand in (dst_uid, self._init_form(dst_uid)):
+            if cand is None:
+                continue
+            try:
+                self.store.upsert_edge(src_uid, cand, relation, confidence=confidence, source=source)
+                return True
+            except KeyError:
+                continue
+        return False
+
+    @staticmethod
+    def _init_form(dst_uid: str):
+        mod, sep, sym = dst_uid.partition("::")
+        if sep and mod.endswith(".py"):
+            return f"{mod[:-3]}/__init__.py::{sym}"
+        return None

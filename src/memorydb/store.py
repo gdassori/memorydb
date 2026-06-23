@@ -13,18 +13,29 @@ from typing import Optional, Sequence
 
 from .migrations import migrate
 from .models import Node
-from .vector import pack
+from .vector import normalize, pack
 
 
 class Store:
-    def __init__(self, path: str = ":memory:") -> None:
-        self.conn = sqlite3.connect(path)
-        self.conn.row_factory = sqlite3.Row
-        # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.execute("PRAGMA journal_mode = WAL")
-        self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync per commit
-        migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
+    # MemoryDB is single-writer (an embedded, single-process substrate). A second concurrent writer is
+    # made to WAIT up to busy_timeout rather than crash immediately (R6-10/R6-11); long index() runs
+    # hold the write lock for their whole transaction, so raise this if you genuinely contend.
+    def __init__(self, path: str = ":memory:", *, busy_timeout_ms: int = 5000) -> None:
+        # timeout= sets the C-level busy handler so a locked DB blocks (then raises) instead of an
+        # instant 'database is locked'.
+        self.conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000.0)
+        try:
+            self.conn.row_factory = sqlite3.Row
+            # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
+            self.conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            if path != ":memory:":                     # WAL is meaningless for an in-memory DB
+                self.conn.execute("PRAGMA journal_mode = WAL")
+            self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync/commit
+            migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
+        except Exception:
+            self.conn.close()                          # don't leak the connection on a failed open (R6-10)
+            raise
 
     # --- lifecycle ---------------------------------------------------------
     def close(self) -> None:
@@ -99,8 +110,11 @@ class Store:
             "INSERT INTO edges(src, dst, relation, weight, confidence, source) "
             "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(src, dst, relation) DO UPDATE SET "
-            "  weight  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.weight ELSE edges.weight END, "
-            "  source  = CASE WHEN excluded.confidence >= edges.confidence THEN excluded.source ELSE edges.source END, "
+            # Strict '>' : a STRICTLY higher-confidence claim takes weight/source; an equal-confidence
+            # re-upsert keeps the existing provenance, so a same-run re-resolve (or a coarse pass on a
+            # tie) can't clobber a precise edge's source (R7-3).
+            "  weight  = CASE WHEN excluded.confidence > edges.confidence THEN excluded.weight ELSE edges.weight END, "
+            "  source  = CASE WHEN excluded.confidence > edges.confidence THEN excluded.source ELSE edges.source END, "
             "  confidence = MAX(edges.confidence, excluded.confidence)",
             (s, d, relation, weight, confidence, source),
         )
@@ -108,10 +122,11 @@ class Store:
         self.conn.execute("UPDATE nodes SET embed_dirty = 1 WHERE id IN (?, ?)", (s, d))
 
     def set_embedding(self, node_id: int, vector: Sequence[float], model: Optional[str] = None) -> None:
+        unit = normalize(vector)   # store unit-normalized so query-time cosine is a dot product (MR-4)
         self.conn.execute(
             "INSERT INTO embeddings(node_id, dim, vector, model) VALUES(?, ?, ?, ?) "
             "ON CONFLICT(node_id) DO UPDATE SET dim=excluded.dim, vector=excluded.vector, model=excluded.model",
-            (node_id, len(vector), pack(vector), model),
+            (node_id, len(unit), pack(unit), model),
         )
         self.conn.execute("UPDATE nodes SET embed_dirty = 0 WHERE id = ?", (node_id,))
 
@@ -128,6 +143,12 @@ class Store:
     def dirty_nodes(self) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM nodes WHERE embed_dirty = 1").fetchall()
         return [self._row_to_node(r) for r in rows]
+
+    def dirty_node_ids(self) -> list[int]:
+        """Just the ids of stale nodes (uses idx_nodes_dirty). The embedding pipeline streams these in
+        batches and fetches each batch's full rows lazily, so peak memory is O(batch) not O(corpus)
+        with full bodies (perf MR-5)."""
+        return [r[0] for r in self.conn.execute("SELECT id FROM nodes WHERE embed_dirty = 1")]
 
     @staticmethod
     def _row_to_node(row: sqlite3.Row) -> dict:

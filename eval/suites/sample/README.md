@@ -13,6 +13,8 @@ Run:
 memorydb-eval run eval/suites/sample
 ```
 
-LOCATE is exact (the call graph is known). The `send_notification` LOCATE case has a *cross-file*
-caller resolved by name → confidence 0.6, so it counts toward `precision` but not `precision@≥0.9`
-(the coarse-edge column, TD-005). The `enqueue` case is a same-file call → confidence 0.9.
+LOCATE is exact (the call graph is known). With the default extractors, the `send_notification`
+cross-file caller is resolved **precisely** by the [PythonResolver](../../../src/memorydb/adapters/code/python_resolver.py)
+(ast/symtable) at confidence 0.97, so `precision@≥0.9` is 1.0. With only the coarse tree-sitter
+`CodeAdapter` it would be a by-name 0.6 edge (counted in `precision` but not `precision@≥0.9`) — the
+gap that `precision@≥0.9` is designed to expose (TD-005).

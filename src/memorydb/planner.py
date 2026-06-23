@@ -20,7 +20,25 @@ _LOCATE = re.compile(
     re.I,
 )
 _EXPLAIN = re.compile(r"\b(how|why|explain|describe|overview|work|works|flow)\b", re.I)
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.:]*")
+
+# Pure query glue — interrogatives / articles / prepositions / auxiliaries that are NEVER identifiers.
+# Dropping these stops a question word from being grounded as the target (R6-13). The LOCATE/EXPLAIN
+# verbs (use/call/get/set/work/flow/reference/invoke/...) are deliberately NOT here: they are common
+# real method names, so we keep them and let the index grounding (WHERE name=:t) reject non-matches —
+# otherwise a symbol literally named `get`/`call` could never be located (R7-1).
+_STOPWORDS = frozenset({
+    "where", "who", "which", "what", "when", "whose", "how", "why", "is", "are", "was", "were", "be",
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "do", "does", "did", "this",
+    "that", "these", "those", "it", "its", "by", "with", "as",
+})
+
+# The LOCATE/EXPLAIN verbs: kept as groundable candidates (a symbol can be named `get`/`call`) but
+# demoted to last-resort so a query verb never out-ranks the real target on length (R8-3).
+_VERBS = frozenset({
+    "use", "used", "uses", "call", "calls", "called", "reference", "references", "invoke", "invokes",
+    "get", "set", "work", "works", "flow", "explain", "describe", "overview", "from",
+})
 
 
 class DefaultIntentClassifier:
@@ -82,7 +100,9 @@ class RetrievalPlanner:
 
     def explain(self, query: str, k: int = 5, depth: int = 2) -> dict:
         qvec = self.embedder.embed([query])[0]
-        seeds = [node_id for _, node_id in self.index.search(qvec, k=k)]
+        # Drop seeds with no feature overlap (cosine ~0): a query that matches nothing should seed on
+        # nothing, not on arbitrary near-orthogonal vectors (R6-22).
+        seeds = [node_id for score, node_id in self.index.search(qvec, k=k) if score > 1e-9]
         reached = Q.traverse(self.store, seeds, max_depth=depth, direction="both")
         ids = [r["id"] for r in reached]
         return {
@@ -96,8 +116,23 @@ class RetrievalPlanner:
     @staticmethod
     def _candidates(query: str) -> list[str]:
         """Identifier tokens ordered best-first: identifier-shaped (CamelCase/snake/dotted) before
-        plain words, longest first. The caller grounds these against the index (see ``_locate``)."""
+        plain words, longest first. Stopwords (incl. the LOCATE/EXPLAIN verbs) are dropped so a question
+        word that names a real symbol isn't grounded as the target (R6-13). For a dotted/qualified token
+        (``mod.foo`` / ``a.py::foo``) the bare last component is also offered, since a symbol's ``name``
+        is just the last segment (R6-9)."""
         toks = _IDENT.findall(query)
-        shaped = [t for t in toks if any(c.isupper() for c in t) or "_" in t or "." in t]
-        rest = [t for t in toks if t not in shaped]
-        return sorted(shaped, key=len, reverse=True) + sorted(rest, key=len, reverse=True)
+        cands: list[str] = []
+        seen: set = set()
+        for t in toks:
+            for c in (t, t.rsplit("::", 1)[-1].rsplit(".", 1)[-1]):   # the token, then its bare tail
+                if c and c.lower() not in _STOPWORDS and c not in seen:
+                    seen.add(c)
+                    cands.append(c)
+        shaped = [t for t in cands if any(ch.isupper() for ch in t) or "_" in t or "." in t or ":" in t]
+        rest = [t for t in cands if t not in shaped]
+        # Within the plain bucket, demote the LOCATE/EXPLAIN verbs to LAST resort: they stay locatable
+        # (so a symbol named `get`/`call` resolves) but never beat the real target on length (R8-3).
+        plain = [t for t in rest if t.lower() not in _VERBS]
+        verbs = [t for t in rest if t.lower() in _VERBS]
+        return (sorted(shaped, key=len, reverse=True) + sorted(plain, key=len, reverse=True)
+                + sorted(verbs, key=len, reverse=True))
