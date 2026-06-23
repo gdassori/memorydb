@@ -107,15 +107,25 @@ def node_neighborhood(store, node_id: int) -> dict:
 
 
 def subgraph_edges(store, node_ids: Sequence[int]) -> list[dict]:
-    """All edges whose both endpoints are within ``node_ids`` (the induced subgraph)."""
+    """All edges whose both endpoints are within ``node_ids`` (the induced subgraph).
+
+    The id set is materialized into a TEMP table with an integer PK and JOINed, instead of two
+    ``json_each`` IN-subqueries — SQLite couldn't index the latter, making this O(|edges| × |ids|) and
+    seconds-slow on a hub (reachable from the public explain/ask/context path). The PK join is indexed
+    (perf R6-8).
+    """
     if not node_ids:
         return []
-    ids = json.dumps([int(i) for i in node_ids])
+    conn = store.conn
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _subgraph_ids(id INTEGER PRIMARY KEY)")
+    conn.execute("DELETE FROM _subgraph_ids")
+    conn.executemany("INSERT OR IGNORE INTO _subgraph_ids(id) VALUES(?)", [(int(i),) for i in node_ids])
     sql = (
         "SELECT s.uid AS src, t.uid AS dst, e.relation AS relation, e.confidence AS confidence "
-        "FROM edges e JOIN nodes s ON s.id = e.src JOIN nodes t ON t.id = e.dst "
-        "WHERE e.src IN (SELECT value FROM json_each(:ids)) "
-        "  AND e.dst IN (SELECT value FROM json_each(:ids)) "
+        "FROM edges e "
+        "JOIN _subgraph_ids a ON a.id = e.src "
+        "JOIN _subgraph_ids b ON b.id = e.dst "
+        "JOIN nodes s ON s.id = e.src JOIN nodes t ON t.id = e.dst "
         "ORDER BY e.confidence DESC"
     )
-    return [dict(r) for r in store.conn.execute(sql, {"ids": ids}).fetchall()]
+    return [dict(r) for r in conn.execute(sql).fetchall()]
