@@ -197,12 +197,14 @@ class MemoryDB:
         return self._pack_blocks(blocks, budget_tokens, intent)
 
     def _explain_blocks(self, result: dict):
-        """One block per node, seeds first (best vector match), then the rest by id — the order the
-        planner already considers most relevant."""
+        """One block per node, seeds first (best vector match), then the rest ordered by uid — the
+        churn-invariant key, not node id which the indexer renumbers on re-index (MR-17, matching the
+        eval ranker's R3L-4 fix)."""
         nodes = {n["id"]: n for n in result.get("nodes", [])}
         seeds = [s for s in result.get("seeds", []) if s in nodes]
-        ordered = seeds + [nid for nid in sorted(nodes) if nid not in set(seeds)]
-        return [(nodes[nid]["uid"], self._render_node(nodes[nid])) for nid in ordered]
+        seen = set(seeds)
+        rest = sorted((nid for nid in nodes if nid not in seen), key=lambda nid: nodes[nid]["uid"])
+        return [(nodes[nid]["uid"], self._render_node(nodes[nid])) for nid in seeds + rest]
 
     @staticmethod
     def _locate_blocks(result: dict):

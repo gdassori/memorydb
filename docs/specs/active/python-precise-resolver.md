@@ -144,9 +144,10 @@ the global def table (one row per symbol). Comfortable to tens of thousands of P
   `_extract_all` dedupes nodes by uid so the two adapters don't double-upsert symbols.
 - **Measured payoff:** the eval sample's `precision@≥0.9` rose **0.5 → 1.0** once the cross-file caller
   became a precise 0.97 edge (validated by `test_end_to_end_sample`).
-- **Deferred:** `jedi`/`pyright` attribute/type resolution (Open Questions — kept stdlib-only); the
-  `#start_byte` uid disambiguation for duplicate qualnames in one file (rare; CodeAdapter uses byte
-  offsets, ast has no equivalent, so colliding duplicates make separate nodes rather than merging).
+- **uid parity (mega-review MR-6):** both adapters now use the **same `#ordinal`** disambiguation for
+  duplicate qualnames (source order), so `@overload` stubs + impl get matching uids and merge; the
+  earlier `#start_byte` mismatch is gone and `module_defs` prefers the real impl over a stub.
+- **Deferred:** `jedi`/`pyright` attribute/type resolution (Open Questions — kept stdlib-only).
 
 ## Open questions
 

@@ -35,10 +35,12 @@ the **one** core runtime dependency. The domain models (`Node`/`Edge`, the `*Rep
 for validation and ergonomics. `Rel`/`Intent` are `str` enums.
 
 What does **not** change: brute-force cosine stays the default `VectorIndex`; `sqlite-vec`/`tree-sitter`/
-`networkx` remain optional extras; there is still **no native build** on the critical path. What does
-change: the package no longer runs with a *completely empty* environment — `pip install pydantic` (a
-pure-Python wheel, no native build) is required. Tests that previously advertised "stdlib only" now
-need pydantic. Trade-off accepted: pydantic's validation/serialisation ergonomics outweigh the loss of
+`networkx` remain optional extras; *our own* extraction/query path needs no native engine. What **does**
+change: the package no longer runs with a *completely empty* environment — `pip install pydantic` is
+required, and pydantic v2 pulls in **`pydantic-core`, a compiled (Rust) wheel** (MR-23 — so the earlier
+"no native build" wording was wrong; prebuilt wheels exist for common platforms, but it is not pure
+Python). Tests that previously advertised "stdlib only" now need pydantic. Trade-off accepted: pydantic's
+validation/serialisation ergonomics outweigh the loss of
 the absolute-zero-install property for an embedded library that is already `pip install`-ed.
 
 ## Review note (2026-06-22)

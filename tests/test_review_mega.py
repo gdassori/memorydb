@@ -216,6 +216,46 @@ def test_mr13_escaping_relative_import_no_edge():
     assert _xconf(s, "root.py::g", "x.py::f") is None                # `from ..x` escapes -> no wrong edge
 
 
+# --- Batch 4: MR-17/18/19/20 ----------------------------------------------------------------
+def test_mr17_context_blocks_ordered_by_uid():
+    import warnings
+    from memorydb import MemoryDB
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        db = MemoryDB.open(":memory:", extractors=[])
+    result = {"intent": "EXPLAIN", "seeds": [], "nodes": [
+        {"id": 1, "uid": "z::c", "type": "function", "name": "c", "attrs": {}},
+        {"id": 2, "uid": "a::a", "type": "function", "name": "a", "attrs": {}},
+        {"id": 3, "uid": "m::b", "type": "function", "name": "b", "attrs": {}}]}
+    uids = [u for u, _ in db._explain_blocks(result)]
+    assert uids == ["a::a", "m::b", "z::c"]          # by uid, not by id order (z::c, a::a, m::b)
+    db.close()
+
+
+def test_mr18_migration3_is_idempotent():
+    import sqlite3
+    from memorydb.migrations import _m3_file_uid_index, migrate
+    conn = sqlite3.connect(":memory:")
+    migrate(conn)
+    _m3_file_uid_index(conn)                          # re-running must not raise 'duplicate column'
+    assert "file_uid" in {r[1] for r in conn.execute("PRAGMA table_xinfo(nodes)")}
+
+
+def test_mr19_ndcg_gains_keep_binary_expected():
+    from memorydb.eval import ndcg_at_k
+    assert abs(ndcg_at_k(["a", "b"], ["a", "b"], 2, gains={"a": 2.0}) - 1.0) < 1e-9   # b still grade 1
+    assert ndcg_at_k(["b", "a"], ["a", "b"], 2, gains={"a": 2.0}) < 1.0               # higher grade lower
+
+
+def test_mr20_traverse_drops_nonexistent_seed():
+    from memorydb import query as Q
+    s = Store(":memory:")
+    s.upsert_node(Node(uid="a", type="function", name="a"))
+    s.commit()
+    assert Q.traverse(s, [999999], max_depth=1) == []                                 # ghost seed dropped
+    assert {r["id"] for r in Q.traverse(s, [s.id_for("a")], max_depth=1)} == {s.id_for("a")}
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

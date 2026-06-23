@@ -211,3 +211,17 @@ A consolidated cluster of documentation/spec inaccuracies, all verified, none wi
 - FIX SOON — MR-6 (consistency/correctness): unify the uid disambiguation scheme between the two adapters and deprioritize @overload stubs in module_defs, so precise edges and LOCATE stop landing on the wrong def for duplicate qualnames. Add the missing duplicate-qualname test fixture.
 - BATCH NEXT — the PythonResolver correctness cluster (MR-7..MR-13): package __init__ targeting, nested-scope shadowing, sibling-scope dict overwrite, import a.b.c aliasing, submodule attribute calls, escaping relative imports. Individually Medium and mostly narrow, but together they are where the 'safe by construction' invariant leaks; fix as a focused resolver-hardening pass with parity tests against CodeAdapter.
 - DEFER / opportunistic — MR-12 (mixed-dim search guard), MR-14/MR-15 (indexer micro-perf), MR-16 (CI smoke gap), MR-17 (facade ordering), MR-18 (migrate race), MR-19/MR-20/MR-21 (eval/contract/handle nits), and MR-23 (the doc/spec-drift sweep). All real but low-urgency; the MR-23 documentation sweep is cheap and worth doing in one batch to stop misleading future implementers, and MR-16 is one CI line.
+---
+
+## Remediation status (2026-06-23) — all 29 confirmed findings fixed
+
+| Findings | Commit | Theme |
+|----------|--------|-------|
+| MR-1, MR-2, MR-3 | `463f2b4` | High: RecursionError-safe resolver; atomic index(); precise-edge durability |
+| MR-4, MR-5, MR-12, MR-14, MR-15, MR-21, MR-22 | `d20bec1` | Perf: stored-normalized vectors/dot-product, streaming reembed, dim filter, memoized resolve, byte reuse, handle leak, heap top-k |
+| MR-6..MR-13 | `e61fcfa` | PythonResolver correctness cluster (uid parity, __init__ targeting, shadowing, sibling scopes, dotted/submodule imports, relative-import escape) |
+| MR-16, MR-17, MR-18, MR-19, MR-20, MR-23 | (this batch) | CI package smoke exercises adapters+index; facade context ordered by uid; idempotent migration 3; nDCG graded+binary; traverse drops ghost seeds; doc/spec drift (TD-004 pydantic-core native build, uid-parity, IMPORTS) |
+
+Regression coverage: `tests/test_review_mega.py` (one+ test per finding). Full suite green (98). The completeness-critic
+coverage gaps (multi-writer durability, non-Python extraction accuracy, retrieval/embedding quality, large-repo
+benchmark) remain open as future review scope.

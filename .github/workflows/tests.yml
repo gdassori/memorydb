@@ -64,6 +64,19 @@ jobs:
           pip install dist/*.whl
           cd "$RUNNER_TEMP"   # import from site-packages, NOT the source tree
           python -c "import memorydb; print('memorydb', memorydb.__version__)"
+          # exercise the adapters subpackage + a real index so a dropped/renamed package is caught,
+          # not just the top-level import (MR-16).
+          python - <<'PY'
+          import os, tempfile
+          from memorydb.adapters.code.python_resolver import PythonResolver
+          from memorydb import MemoryDB
+          d = tempfile.mkdtemp()
+          open(os.path.join(d, "m.py"), "w").write("def a():\n    return b()\n\ndef b():\n    return 1\n")
+          db = MemoryDB.open(":memory:")
+          rep = db.index(d)
+          assert rep.files_indexed == 1 and rep.edges_upserted >= 1, rep
+          print("adapters subpackage + index OK:", rep.edges_upserted, "edges")
+          PY
           memorydb --help > /dev/null
           memorydb-eval --help > /dev/null
-          echo "console scripts import + run OK"
+          echo "console scripts + adapters + index OK"

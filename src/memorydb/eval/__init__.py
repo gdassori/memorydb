@@ -69,17 +69,20 @@ def mrr(ranked, expected) -> float:
 
 
 def ndcg_at_k(ranked, expected, k: int, gains: Optional[dict] = None) -> float:
-    """nDCG@k. Binary relevance unless ``gains`` (uid → graded relevance) is provided."""
+    """nDCG@k. Binary relevance unless ``gains`` (uid → graded relevance) is provided; ``gains`` only
+    *overrides* grades — an ``expected_uid`` absent from ``gains`` is still relevant at grade 1.0, and
+    counts in both the DCG and the ideal pool (MR-19). An empty/None ``gains`` is pure binary (I16)."""
     exp = set(expected)
 
     def rel(uid):
-        if gains:  # falsy (None or empty) → binary relevance, so an empty dict can't zero a labelled case (I16)
-            return float(gains.get(uid, 0.0))
+        if gains and uid in gains:
+            return float(gains[uid])
         return 1.0 if uid in exp else 0.0
 
     ranked = _dedupe(ranked)[:k]
     dcg = sum(rel(uid) / math.log2(i + 2) for i, uid in enumerate(ranked))
-    ideal = sorted((rel(u) for u in (gains or {uid: 1.0 for uid in exp})), reverse=True)[:k]
+    ideal_pool = set(exp) | set(gains or {})            # every uid that has any positive relevance
+    ideal = sorted((rel(u) for u in ideal_pool), reverse=True)[:k]
     idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
     return dcg / idcg if idcg > 0 else 0.0
 

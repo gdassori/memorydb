@@ -46,10 +46,14 @@ def _m3_file_uid_index(conn: sqlite3.Connection) -> None:
     # index, so deleting a file's symbols is an indexed lookup instead of a full json_extract scan
     # (perf I8). Also a partial index on the staleness flag so refresh() finds the dirty set without
     # scanning every node (perf I12).
-    conn.execute(
-        "ALTER TABLE nodes ADD COLUMN file_uid TEXT "
-        "GENERATED ALWAYS AS (json_extract(attrs, '$.file_uid')) VIRTUAL"
-    )
+    # ALTER ... ADD COLUMN has no IF NOT EXISTS — guard it so a re-run / racing first-open doesn't fail
+    # with 'duplicate column name' (MR-18). table_xinfo lists VIRTUAL generated columns.
+    cols = {r[1] for r in conn.execute("PRAGMA table_xinfo(nodes)")}
+    if "file_uid" not in cols:
+        conn.execute(
+            "ALTER TABLE nodes ADD COLUMN file_uid TEXT "
+            "GENERATED ALWAYS AS (json_extract(attrs, '$.file_uid')) VIRTUAL"
+        )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_file_uid ON nodes(file_uid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_dirty ON nodes(embed_dirty) WHERE embed_dirty = 1")
 

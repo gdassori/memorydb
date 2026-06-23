@@ -155,10 +155,18 @@ opt-in per language.
   global-name tier is NOT returned as an `Edge`**; the adapter returns it as a **pending edge**
   `(src_uid, dst_name, relation, confidence)` that the [indexer](indexer-ingestion-pipeline.md) resolves against the
   global symbol table in pass 2 (kept-low or dropped if still unresolved).
-- **Stable uids for overloads:** assign the `#N` disambiguation suffix by a **deterministic key** (start byte
-  offset), not parse iteration order, so a re-parse yields the same uid and the indexer doesn't churn/duplicate.
+- **Stable uids for overloads:** duplicate qualnames get a `#N` suffix. Updated 2026-06-23 (MR-6): the suffix
+  is the **source-order ordinal** (`#1`, `#2`, …), shared with the [PythonResolver](python-precise-resolver.md)
+  so the two adapters produce identical uids and their nodes/edges merge (the earlier `#start_byte` key did not
+  match ast and broke the merge).
 - **file linkage:** stamp `attrs.file_uid` (and the file's `mtime`/`lang`) on every symbol so FILTER and the ranker
   have a standard join key (C5).
+
+## Review remediation (2026-06-23, MR-23)
+
+The implemented adapter emits **`CALLS` and `INHERITS`** edges only — imports feed the per-file `imports` *set*
+that scopes coarse-edge confidence (import-scoped 0.6 vs bare-name 0.3), **not** a materialized `IMPORTS` edge.
+The "CALLS/IMPORTS" phrasing in Goal/Algorithm is forward-looking, not current behavior.
 
 ## References
 

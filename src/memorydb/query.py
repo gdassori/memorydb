@@ -58,7 +58,9 @@ def traverse(
         rel_clause = " AND e.relation IN (SELECT value FROM json_each(:rels))"
     sql = (
         "WITH RECURSIVE reach(id, depth) AS ( "
-        "  SELECT value, 0 FROM json_each(:seeds) "
+        # Only seed from ids that are real nodes, so traverse never reports a non-existent seed as a
+        # depth-0 'reached' node (contract fix MR-20).
+        "  SELECT value, 0 FROM json_each(:seeds) WHERE value IN (SELECT id FROM nodes) "
         "  UNION "
         f"  {_recursive_branches(direction, rel_clause)} "
         ") SELECT id, MIN(depth) AS depth FROM reach GROUP BY id ORDER BY depth, id"
