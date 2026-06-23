@@ -1,7 +1,8 @@
 ---
 title: "Python precise resolver — high-confidence edges via ast + symtable"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-23
 author: claude
 related_tds: [TD-005, TD-002]
 components: [adapters/code]
@@ -117,11 +118,35 @@ the global def table (one row per symbol). Comfortable to tens of thousands of P
 
 ## Tasks
 
-- [ ] module-name + import-map resolution (relative, aliased, star, package `__init__`)
-- [ ] def/class node extraction with nesting-aware qualname (shared uid scheme)
-- [ ] symtable-driven scope resolution for calls + bases
-- [ ] confidence tiers + supersession via upsert
-- [ ] zero-dep test suite incl. the supersedes-coarse case
+- [x] module-name + import-map resolution (relative, aliased, star, package `__init__`)
+- [x] def/class node extraction with nesting-aware qualname (shared uid scheme)
+- [x] symtable-driven scope resolution for calls + bases
+- [x] confidence tiers + supersession via upsert
+- [x] zero-dep test suite incl. the supersedes-coarse case
+
+## Implementation notes (2026-06-23)
+
+- `src/memorydb/adapters/code/python_resolver.py` — `PythonResolver` (Extractor port) + `_Extractor`.
+  Pure stdlib (`ast` + `symtable`), so Python resolves even **without** the `[code]` extra.
+- **Safe by construction:** every edge targets a *computed* uid (`relpath::qualname`, identical to the
+  CodeAdapter scheme) and the indexer materialises it only if both endpoints exist — so an imperfect
+  module-path guess yields a *skipped* edge, never a wrong one. This let me keep import resolution
+  pragmatic (best-effort dotted→relpath, relative `.`/`..`, aliases, `import *`) without filesystem
+  probing for `__init__` vs module.
+- **Confidence tiers:** local def `1.0`, imported symbol `0.97`, module-attr `mod.f()` `0.95`,
+  `self/cls.method()` resolved against the enclosing class `0.9`, single `from m import *` candidate
+  `0.5`. Unresolvable (untyped receiver, chained attrs) → **skip** (no guess).
+- **symtable** is used narrowly but correctly: it supplies, per function scope, the set of
+  parameter/local names so a call to a name shadowed by a local does **not** emit a false edge to a
+  module-level def of the same name (`test_local_variable_shadows_module_def`).
+- **Supersession** rides the store's MAX-confidence upsert (no ordering dependence): wired into
+  `ExtractorRegistry.default()` as `[CodeAdapter (if [code]), PythonResolver]`; the indexer's
+  `_extract_all` dedupes nodes by uid so the two adapters don't double-upsert symbols.
+- **Measured payoff:** the eval sample's `precision@≥0.9` rose **0.5 → 1.0** once the cross-file caller
+  became a precise 0.97 edge (validated by `test_end_to_end_sample`).
+- **Deferred:** `jedi`/`pyright` attribute/type resolution (Open Questions — kept stdlib-only); the
+  `#start_byte` uid disambiguation for duplicate qualnames in one file (rare; CodeAdapter uses byte
+  offsets, ast has no equivalent, so colliding duplicates make separate nodes rather than merging).
 
 ## Open questions
 

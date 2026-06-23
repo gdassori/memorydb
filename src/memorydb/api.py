@@ -25,22 +25,26 @@ from .vector import make_vector_index
 
 
 class ExtractorRegistry:
-    """Builds the default set of extractors. Today that is the tree-sitter ``CodeAdapter`` when the
-    ``[code]`` extra is installed; otherwise an empty list (the facade still opens and runs — it just
-    indexes no code). Later specs (e.g. python-precise-resolver) register additional extractors here."""
+    """Builds the default set of extractors: the multilang tree-sitter ``CodeAdapter`` (when the
+    ``[code]`` extra is installed) plus the stdlib ``PythonResolver`` (always). Python files get
+    precise ast/symtable edges that supersede the coarse tree-sitter ones via MAX-confidence upsert;
+    other languages get coarse edges only. With no ``[code]`` extra, Python is still fully handled."""
 
     @staticmethod
     def default() -> list:
+        from .adapters.code.python_resolver import PythonResolver
+        extractors: list = []
         try:
             from .adapters.code import CodeAdapter
-            return [CodeAdapter()]
+            extractors.append(CodeAdapter())
         except NotImplementedError:
             warnings.warn(
-                "MemoryDB: the [code] extra is not installed, so no code extractor is active — "
-                "index() will ingest nothing. Run: pip install -e '.[code]'  (tree-sitter).",
+                "MemoryDB: the [code] extra is not installed — only Python is indexed (precise "
+                "ast/symtable resolver). For other languages run: pip install -e '.[code]' (tree-sitter).",
                 stacklevel=2,
             )
-            return []
+        extractors.append(PythonResolver())  # stdlib, no extra required
+        return extractors
 
 
 class ContextResult(BaseModel):

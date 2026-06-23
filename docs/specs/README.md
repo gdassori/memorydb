@@ -14,7 +14,7 @@ and the `agentic spec` tooling).
 |------|-------|-----|--------|
 | [v0-substrate](active/v0-substrate.md) | SQLite store, recursive-CTE traversal, brute-force vectors, intent planner | TD-002..007 | active |
 | [code-adapter-treesitter](active/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | completed |
-| [python-precise-resolver](active/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | planned |
+| [python-precise-resolver](active/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | completed |
 | [schema-migrations](active/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | completed |
 | [indexer-ingestion-pipeline](active/indexer-ingestion-pipeline.md) | Directory walk, incremental (mtime/hash) re-index, deletions, batching | TD-003, TD-005 | completed |
 

@@ -180,6 +180,17 @@ class Indexer:
             m.pending += res.pending
             if m.lang is None:
                 m.lang = getattr(ex, "lang_of", lambda p: None)(path)
+        # Multiple extractors (e.g. the coarse CodeAdapter + the precise PythonResolver) emit the same
+        # symbols under the same uid scheme — dedupe by uid so nodes_upserted isn't double-counted and
+        # we don't upsert a symbol twice. Edges intentionally are NOT deduped: they merge in the store
+        # by MAX-confidence, so the precise edge supersedes the coarse one for the same (src,dst,rel).
+        seen: set = set()
+        deduped: list = []
+        for nd in m.nodes:
+            if nd.uid not in seen:
+                seen.add(nd.uid)
+                deduped.append(nd)
+        m.nodes = deduped
         return m
 
     def _existing_files(self) -> dict:

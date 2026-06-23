@@ -144,7 +144,10 @@ def test_end_to_end_sample():
         card = evaluate_suite(str(_SAMPLE), k=10)
     assert not card.broken                                  # labels match the fixture
     assert card.locate["f1"] == 1.0                          # call graph is deterministic
-    assert _close(card.locate["precision_high"], 0.5)        # cross-file edge is conf 0.6 (TD-005)
+    # The default extractors now include the PythonResolver, so the cross-file send_notification
+    # caller is a PRECISE 0.97 edge (was a coarse 0.6 tree-sitter pending) — precision@>=0.9 is now
+    # 1.0, up from 0.5. This is the eval harness measuring the python-precise-resolver's payoff.
+    assert _close(card.locate["precision_high"], 1.0)
     assert card.explain["recall_at_k"] >= 0.5
 
 
