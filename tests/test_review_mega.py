@@ -338,6 +338,28 @@ def test_r6_15_empty_db_json_is_valid():
     assert _json.loads(out.getvalue()) == {}                         # valid (empty) JSON, not 0 bytes
 
 
+# --- Round 6 — Batch D: retrieval (R6-9/13) -------------------------------------------------
+def test_r6_9_dotted_locate_offers_bare_tail():
+    from memorydb.planner import RetrievalPlanner
+    c = RetrievalPlanner._candidates
+    assert "foo" in c("where is mod.foo used?")          # dotted token -> bare tail also a candidate
+    assert "run" in c("who calls a.py::Bar.run?")        # ::-qualified too
+    # end-to-end: a dotted LOCATE query grounds the symbol and finds its caller
+    repo = _repo({"b.py": "def foo():\n    return 1\n",
+                  "a.py": "from b import foo\n\ndef g():\n    return foo()\n"})
+    s = Store(":memory:")
+    from memorydb import HashingEmbedder
+    Indexer(s, [PythonResolver()], HashingEmbedder()).index(repo)
+    res = RetrievalPlanner(s, HashingEmbedder()).retrieve("where is b.foo used?")
+    assert res["intent"] == "LOCATE" and "a.py::g" in {r["src_uid"] for r in res["references"]}
+
+
+def test_r6_13_stopwords_not_grounded_as_symbol():
+    from memorydb.planner import RetrievalPlanner
+    assert RetrievalPlanner._candidates("where is the call used?") == []   # all stopwords dropped
+    assert "send_notification" in RetrievalPlanner._candidates("where is send_notification used?")
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

@@ -20,7 +20,17 @@ _LOCATE = re.compile(
     re.I,
 )
 _EXPLAIN = re.compile(r"\b(how|why|explain|describe|overview|work|works|flow)\b", re.I)
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.:]*")
+
+# Query words that must never be grounded as a symbol — the LOCATE/EXPLAIN verbs plus common
+# articles/prepositions/interrogatives. Without this a question word that happens to name a real
+# symbol (e.g. `call`, `flow`, `use`) gets matched as the target (R6-13).
+_STOPWORDS = frozenset({
+    "where", "who", "which", "what", "when", "how", "why", "is", "are", "the", "a", "an", "of", "in",
+    "to", "on", "for", "and", "or", "do", "does", "this", "that", "it", "use", "used", "uses", "call",
+    "calls", "called", "reference", "references", "invoke", "invokes", "explain", "describe", "overview",
+    "work", "works", "flow", "get", "set", "from",
+})
 
 
 class DefaultIntentClassifier:
@@ -82,7 +92,9 @@ class RetrievalPlanner:
 
     def explain(self, query: str, k: int = 5, depth: int = 2) -> dict:
         qvec = self.embedder.embed([query])[0]
-        seeds = [node_id for _, node_id in self.index.search(qvec, k=k)]
+        # Drop seeds with no feature overlap (cosine ~0): a query that matches nothing should seed on
+        # nothing, not on arbitrary near-orthogonal vectors (R6-22).
+        seeds = [node_id for score, node_id in self.index.search(qvec, k=k) if score > 1e-9]
         reached = Q.traverse(self.store, seeds, max_depth=depth, direction="both")
         ids = [r["id"] for r in reached]
         return {
@@ -96,8 +108,18 @@ class RetrievalPlanner:
     @staticmethod
     def _candidates(query: str) -> list[str]:
         """Identifier tokens ordered best-first: identifier-shaped (CamelCase/snake/dotted) before
-        plain words, longest first. The caller grounds these against the index (see ``_locate``)."""
+        plain words, longest first. Stopwords (incl. the LOCATE/EXPLAIN verbs) are dropped so a question
+        word that names a real symbol isn't grounded as the target (R6-13). For a dotted/qualified token
+        (``mod.foo`` / ``a.py::foo``) the bare last component is also offered, since a symbol's ``name``
+        is just the last segment (R6-9)."""
         toks = _IDENT.findall(query)
-        shaped = [t for t in toks if any(c.isupper() for c in t) or "_" in t or "." in t]
-        rest = [t for t in toks if t not in shaped]
+        cands: list[str] = []
+        seen: set = set()
+        for t in toks:
+            for c in (t, t.rsplit("::", 1)[-1].rsplit(".", 1)[-1]):   # the token, then its bare tail
+                if c and c.lower() not in _STOPWORDS and c not in seen:
+                    seen.add(c)
+                    cands.append(c)
+        shaped = [t for t in cands if any(ch.isupper() for ch in t) or "_" in t or "." in t or ":" in t]
+        rest = [t for t in cands if t not in shaped]
         return sorted(shaped, key=len, reverse=True) + sorted(rest, key=len, reverse=True)
