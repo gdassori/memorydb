@@ -506,6 +506,63 @@ def test_r7_ts_abstract_namespace_enum_fieldarrow():
     assert nodes.get("C.handle") == "method"                                    # R7-8 class-field arrow
 
 
+# --- Round 8: regressions from round-7 -----------------------------------------------------
+def test_r8_1_v5_store_upgrades_to_source_column():
+    import sqlite3
+    from memorydb.migrations import LATEST, migrate
+    conn = sqlite3.connect(":memory:")
+    # an old v5 store: pending_edges has dst_uid but NOT source; migration 5 was already applied
+    conn.executescript(
+        "CREATE TABLE pending_edges(src_uid TEXT, src_file TEXT, dst_name TEXT, relation TEXT, "
+        "  confidence REAL, dst_uid TEXT); PRAGMA user_version = 5;")
+    migrate(conn)                                                # only migration 6 should run
+    assert "source" in {r[1] for r in conn.execute("PRAGMA table_xinfo(pending_edges)")}
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == LATEST and LATEST >= 6
+
+
+def test_r8_2_precise_edge_not_rebound_to_wrong_file():
+    repo = _repo({"b.py": "def foo():\n    return 1\n",
+                  "a.py": "from b import foo\n\ndef g():\n    return foo()\n"})
+    s = Store(":memory:")
+    idx = Indexer(s, [PythonResolver()])
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "b.py::foo") == 0.97
+    with open(os.path.join(repo, "b.py"), "w") as fh:
+        fh.write("def bar():\n    return 1\n")                  # rename the callee away
+    with open(os.path.join(repo, "d.py"), "w") as fh:
+        fh.write("def foo():\n    return 9\n")                  # an UNRELATED same-named symbol elsewhere
+    idx.index(repo)
+    assert _xconf(s, "a.py::g", "d.py::foo") is None            # NOT rebound to the wrong file (MR-10)
+
+
+def test_r8_3_verb_does_not_hijack_target():
+    from memorydb.planner import RetrievalPlanner
+    c = RetrievalPlanner._candidates("where is foo used?")
+    assert "foo" in c and "used" in c
+    assert c.index("foo") < c.index("used")                     # the real target is tried before the verb
+
+
+def test_r8_4_js_class_field_arrow():
+    if not HAVE_CODE:
+        return
+    nodes, _ = _extract("c.js", "class C { handleClick = (e) => { return 1 } }\n")
+    assert nodes.get("C.handleClick") == "method"               # JS field-arrow (name under `property`)
+
+
+def test_r8_5_self_method_keeps_python_ast_source():
+    if not HAVE_CODE:
+        return
+    from memorydb import HashingEmbedder
+    from memorydb.adapters.code import CodeAdapter
+    repo = _repo({"m.py": "class C:\n    def a(self):\n        return self.b()\n    def b(self):\n        return 1\n"})
+    s = Store(":memory:")
+    Indexer(s, [CodeAdapter(), PythonResolver()], HashingEmbedder()).index(repo)
+    src = s.conn.execute(
+        "SELECT e.source FROM edges e JOIN nodes a ON a.id=e.src JOIN nodes b ON b.id=e.dst "
+        "WHERE a.uid='m.py::C.a' AND b.uid='m.py::C.b'").fetchone()[0]
+    assert src == "python-ast"                                  # 0.92 self-method beats the coarse 0.9 tie
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

@@ -66,7 +66,7 @@ def test_resolves_module_attribute():
 def test_self_method():
     repo = _repo({"m.py": "class C:\n    def a(self):\n        return self.b()\n    def b(self):\n        return 1\n"})
     e = _edges(repo, "m.py")
-    assert e[("m.py::C.a", "CALLS", "m.py::C.b")] == 0.9
+    assert e[("m.py::C.a", "CALLS", "m.py::C.b")] == 0.92
 
 
 def test_inheritance_local_and_imported():

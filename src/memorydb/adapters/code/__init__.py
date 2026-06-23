@@ -42,7 +42,7 @@ LANGS: tuple = (
              import_types=frozenset({"import_statement"}), id_types=_ID_C),
     LangSpec(name="typescript", extensions=(".ts", ".tsx"),
              func_types=frozenset({"function_declaration", "method_definition", "method_signature",
-                                   "abstract_method_signature"}),
+                                   "abstract_method_signature", "function_signature"}),
              class_types=frozenset({"class_declaration", "interface_declaration",
                                     "abstract_class_declaration", "enum_declaration"}),
              call_types=frozenset({"call_expression", "new_expression"}),
@@ -165,9 +165,18 @@ class CodeAdapter:
                 if spec.name == "rust" and t == "impl_item":
                     impl_type, trait = self._rust_impl(child)
                     if impl_type:
-                        if trait:
+                        if trait and trait != impl_type:   # skip a spurious self-INHERITS (R8-9)
                             refs.append((f"{rel}::{impl_type}", trait, trait, Rel.INHERITS))
                         walk(child, stack + [impl_type], enclosing, depth + 1, in_class=True)
+                    else:
+                        walk(child, stack, enclosing, depth + 1, in_class)
+                    continue
+                # Rust `mod a { ... }` is a scope (R8-8) — qualify its items as a.f, like TS namespaces.
+                if spec.name == "rust" and t == "mod_item":
+                    nm = child.child_by_field_name("name") or self._first_id(child, spec)
+                    modname = (nm.text.decode("utf-8", "replace") if hasattr(nm, "text") else nm) if nm else None
+                    if modname:
+                        walk(child, stack + [modname], enclosing, depth + 1, in_class=False)
                     else:
                         walk(child, stack, enclosing, depth + 1, in_class)
                     continue
@@ -197,7 +206,12 @@ class CodeAdapter:
                 # A.run / A.B.run instead of fusing across namespaces (R7-5).
                 if spec.name in ("javascript", "typescript") and t in ("internal_module", "module", "namespace"):
                     nm = child.child_by_field_name("name")
-                    nsname = nm.text.decode("utf-8", "replace") if nm is not None else self._first_id(child, spec)
+                    if nm is not None and nm.type == "string":     # `declare module "x"` -> strip quotes (R8-7)
+                        frag = next((c for c in nm.named_children if c.type == "string_fragment"), None)
+                        nsname = frag.text.decode("utf-8", "replace") if frag is not None else \
+                            nm.text.decode("utf-8", "replace").strip('"').strip("'")
+                    else:
+                        nsname = nm.text.decode("utf-8", "replace") if nm is not None else self._first_id(child, spec)
                     if nsname:
                         walk(child, stack + [nsname.split(".")[-1]], enclosing, depth + 1, in_class=False)
                     else:
@@ -254,6 +268,8 @@ class CodeAdapter:
     def _name(self, node, spec: LangSpec) -> Optional[str]:
         nm = node.child_by_field_name("name")
         if nm is not None:
+            if nm.type == "computed_property_name":   # `[expr]() {}` — no stable name, skip (R8-10)
+                return None
             return nm.text.decode("utf-8", "replace").split(".")[-1]
         return self._first_id(node, spec)
 
@@ -365,15 +381,17 @@ class CodeAdapter:
 
     @staticmethod
     def _arrow_decl(node):
-        """A JS/TS ``variable_declarator`` whose value is an arrow/function -> its LHS name (R6-4)."""
+        """A JS/TS ``variable_declarator`` / class field whose value is an arrow/function -> its name
+        (R6-4). A JS class field names via the ``property`` field (property_identifier), TS via ``name``
+        (R8-4)."""
         val = node.child_by_field_name("value")
         if val is None or val.type not in ("arrow_function", "function", "function_expression"):
             return None
-        nm = node.child_by_field_name("name")
-        if nm is not None:
+        nm = node.child_by_field_name("name") or node.child_by_field_name("property")
+        if nm is not None and nm.type in ("identifier", "property_identifier"):
             return nm.text.decode("utf-8", "replace").split(".")[-1]
         return next((c.text.decode("utf-8", "replace") for c in node.named_children
-                     if c.type == "identifier"), None)
+                     if c.type in ("identifier", "property_identifier")), None)
 
     def _import_names(self, node, src: bytes, spec: LangSpec) -> set:
         out: set = set()

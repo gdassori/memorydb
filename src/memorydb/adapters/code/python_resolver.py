@@ -28,7 +28,8 @@ from . import Extraction
 _LOCAL = 1.0        # bare name bound to a def in this module
 _IMPORT_SYM = 0.97  # bare name imported as a symbol: `from m import f` -> f()
 _IMPORT_ATTR = 0.95 # attribute on an imported module alias: `import m` -> m.f()
-_SELF_METHOD = 0.9  # self.method() / cls.method() resolved against the enclosing class
+_SELF_METHOD = 0.92  # self.method() / cls.method() resolved against the enclosing class. >0.9 so it
+                     # strictly beats the coarse tree-sitter 0.9 in-file edge and keeps its provenance (R8-5)
 _STAR = 0.5         # candidate via a single `from m import *`
 
 _MAX_DEPTH = 200    # AST nesting cap — a hostile deeply-nested file must not blow the recursion limit

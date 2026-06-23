@@ -321,15 +321,18 @@ class Indexer:
         for r in rows:
             source = r["source"] or "treesitter"
             rel, conf, src = r["relation"], r["confidence"], r["src_uid"]
-            # Prefer the exact dst_uid for a precise row (R6-2); fall back to a UNIQUE by-name match if
-            # that target no longer resolves (e.g. the callee moved file behind a re-export — R7-7), and
-            # for coarse rows (no dst_uid) resolve by name.
-            ok = r["dst_uid"] is not None and self._safe_edge(src, r["dst_uid"], rel, conf, source)
-            if not ok:
+            # A PRECISE row resolves ONLY to its exact dst_uid (R6-2) — NO by-name fallback: a globally
+            # unique name does not mean the caller's import points at that file, so a fallback would
+            # silently rebind a vanished precise edge to the wrong file at high confidence (R8-2, the
+            # MR-10 hazard). Coarse rows (no dst_uid) resolve through a unique by-name match.
+            if r["dst_uid"] is not None:
+                dst = r["dst_uid"]
+            else:
                 dst = unique_by_name(r["dst_name"])
-                ok = dst is not None and self._safe_edge(src, dst, rel, conf, source)
-            up += 1 if ok else 0
-            un += 0 if ok else 1
+            if dst is not None and self._safe_edge(src, dst, rel, conf, source):
+                up += 1
+            else:
+                un += 1
         return up, un
 
     def _resolve_name(self, name: str) -> list:

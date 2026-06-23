@@ -33,6 +33,13 @@ _STOPWORDS = frozenset({
     "that", "these", "those", "it", "its", "by", "with", "as",
 })
 
+# The LOCATE/EXPLAIN verbs: kept as groundable candidates (a symbol can be named `get`/`call`) but
+# demoted to last-resort so a query verb never out-ranks the real target on length (R8-3).
+_VERBS = frozenset({
+    "use", "used", "uses", "call", "calls", "called", "reference", "references", "invoke", "invokes",
+    "get", "set", "work", "works", "flow", "explain", "describe", "overview", "from",
+})
+
 
 class DefaultIntentClassifier:
     """Cheap regex router. Ambiguous queries fall through to EXPLAIN (the richer path)."""
@@ -123,4 +130,9 @@ class RetrievalPlanner:
                     cands.append(c)
         shaped = [t for t in cands if any(ch.isupper() for ch in t) or "_" in t or "." in t or ":" in t]
         rest = [t for t in cands if t not in shaped]
-        return sorted(shaped, key=len, reverse=True) + sorted(rest, key=len, reverse=True)
+        # Within the plain bucket, demote the LOCATE/EXPLAIN verbs to LAST resort: they stay locatable
+        # (so a symbol named `get`/`call` resolves) but never beat the real target on length (R8-3).
+        plain = [t for t in rest if t.lower() not in _VERBS]
+        verbs = [t for t in rest if t.lower() in _VERBS]
+        return (sorted(shaped, key=len, reverse=True) + sorted(plain, key=len, reverse=True)
+                + sorted(verbs, key=len, reverse=True))

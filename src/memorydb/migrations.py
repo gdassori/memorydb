@@ -77,13 +77,19 @@ def _m4_pending_edges(conn: sqlite3.Connection) -> None:
 
 
 def _m5_pending_dst_uid(conn: sqlite3.Connection) -> None:
-    # dst_uid: the exact resolved dst uid for a PRECISE cross-file edge, so re-resolution after a callee
-    # edit rebuilds the same edge even when the target name is a duplicate qualname (R6-2). source: the
-    # edge's true provenance, so a precise edge rebuilt via pending keeps e.g. 'python-ast' instead of a
-    # hardcoded 'treesitter' (R7-3). Both NULL for coarse by-name rows.
+    # The exact resolved dst uid for a PRECISE cross-file edge, so re-resolution after a callee edit
+    # rebuilds the same edge even when the target name is a duplicate qualname (R6-2). NULL for coarse
+    # by-name rows.
     cols = {r[1] for r in conn.execute("PRAGMA table_xinfo(pending_edges)")}
     if "dst_uid" not in cols:
         conn.execute("ALTER TABLE pending_edges ADD COLUMN dst_uid TEXT")
+
+
+def _m6_pending_source(conn: sqlite3.Connection) -> None:
+    # The edge's true provenance, so a precise edge rebuilt via pending keeps e.g. 'python-ast' instead
+    # of a hardcoded 'treesitter' (R7-3). A SEPARATE migration (not folded into m5) so a store already at
+    # v5 still gets the column — never mutate a shipped migration in place (R8-1).
+    cols = {r[1] for r in conn.execute("PRAGMA table_xinfo(pending_edges)")}
     if "source" not in cols:
         conn.execute("ALTER TABLE pending_edges ADD COLUMN source TEXT")
 
@@ -94,10 +100,11 @@ MIGRATIONS: list[Migration] = [
     Migration(version=3, name="file_uid_index", apply=_m3_file_uid_index),
     Migration(version=4, name="pending_edges", apply=_m4_pending_edges),
     Migration(version=5, name="pending_dst_uid", apply=_m5_pending_dst_uid),
+    Migration(version=6, name="pending_source", apply=_m6_pending_source),
     # Future (documented in specs, not yet coded):
-    #   6: node_history / edge_history (TD-009 temporal identity)
-    #   7: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
-    #   8: concepts / concept_edges (concept-ontology-layer)
+    #   7: node_history / edge_history (TD-009 temporal identity)
+    #   8: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
+    #   9: concepts / concept_edges (concept-ontology-layer)
 ]
 LATEST = MIGRATIONS[-1].version
 
