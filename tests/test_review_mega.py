@@ -395,6 +395,69 @@ def test_r6_11_concurrent_writers_wait_not_crash():
     assert Store(p).conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 80
 
 
+# --- Round 6 — Batch B: multilang extraction (R6-3/4/5/6/7/16/17/19/23) [code]-gated ---------
+try:
+    import tree_sitter  # noqa: F401
+    import tree_sitter_language_pack  # noqa: F401
+    from memorydb.adapters.code import CodeAdapter
+    HAVE_CODE = True
+except Exception:
+    HAVE_CODE = False
+
+
+def _extract(fname, code):
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, fname)
+    with open(p, "w") as fh:
+        fh.write(code)
+    ex = CodeAdapter(repo_root=d).extract(p)
+    nodes = {n.uid.split("::")[-1]: n.type for n in ex.nodes}
+    edges = {(e.src.split("::")[-1], e.relation, e.dst.split("::")[-1]) for e in ex.edges}
+    return nodes, edges
+
+
+def test_r6_go_types_methods_receivers():
+    if not HAVE_CODE:
+        return
+    nodes, edges = _extract("m.go",
+        "package m\ntype Point struct { X int }\ntype Shape interface { Area() int }\n"
+        "func (p Point) Area() int { return helper() }\nfunc helper() int { return 1 }\n")
+    assert nodes.get("Point") == "class" and nodes.get("Shape") == "class"   # R6-3 type_spec
+    assert nodes.get("Point.Area") == "method"                               # R6-6 receiver + method kind
+    assert ("Point.Area", "CALLS", "helper") in edges
+
+
+def test_r6_js_arrows_inheritance_methods():
+    if not HAVE_CODE:
+        return
+    nodes, edges = _extract("m.js",
+        "const f = (a) => g(a);\nfunction g(a){ return a }\nclass A extends B { m(){ return this.n() } n(){} }\n")
+    assert nodes.get("f") == "function" and nodes.get("g") == "function"     # R6-4 arrow extracted
+    assert nodes.get("A.m") == "method" and nodes.get("A.n") == "method"
+    assert ("f", "CALLS", "g") in edges and ("A.m", "CALLS", "A.n") in edges
+
+
+def test_r6_ts_interface_methods_and_inheritance():
+    if not HAVE_CODE:
+        return
+    nodes, edges = _extract("m.ts",
+        "interface I { foo(): number }\nclass A extends B implements I { foo(){ return 1 } }\nconst h = () => 1;\n")
+    assert nodes.get("I.foo") == "method"                                    # R6-23 interface method
+    assert nodes.get("h") == "function"                                      # R6-4 arrow
+    assert ("A", "INHERITS", "I") in edges                                   # R6-5 implements -> INHERITS
+
+
+def test_r6_rust_impl_scope_no_dup_and_inherits():
+    if not HAVE_CODE:
+        return
+    nodes, edges = _extract("m.rs",
+        "struct Point { x: i32 }\ntrait Shape { fn area(&self) -> i32; }\n"
+        "impl Shape for Point { fn area(&self) -> i32 { 1 } }\nimpl Point { fn new() -> Point { Point{x:0} } }\n")
+    assert [k for k in nodes if k.startswith("Point") and "::" not in k].count("Point") == 1  # R6-16 no dup
+    assert nodes.get("Point.area") == "method" and nodes.get("Point.new") == "method"  # R6-7 named by type
+    assert ("Point", "INHERITS", "Shape") in edges                           # R6-7 impl-for-trait
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

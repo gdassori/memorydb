@@ -120,3 +120,18 @@
 - R6-7: name Rust impl_item owners from the implementing type.
 - R6-10+R6-11: busy_timeout, WAL retry, close-on-failure; document single-writer.
 - R6-15+R6-14+R6-18+R6-20: empty-DB --json, eval k<corpus, confidence bounds, Scorecard extra='forbid'.
+---
+
+## Remediation status — all 24 confirmed findings fixed
+
+| Findings | Commit | Theme |
+|----------|--------|-------|
+| R6-1, R6-2, R6-12, R6-19 | `ba0538b` | Complete the MR-6 ordinal fix: edge-src uid, exact dst_uid persistence (migration 5), self-method target, method-vs-function kind; collect conditionally-defined defs |
+| R6-18, R6-20, R6-15, R6-21 | `bce0570` | confidence [0,1] bound; Scorecard extra=forbid; empty-DB --json valid; single id_for/edge |
+| R6-8 | `b4779a5` | subgraph_edges TEMP-table integer-PK join (27-55s -> ms) |
+| R6-9, R6-13, R6-14, R6-22 | `e1d4277` | dotted-LOCATE grounding; stopword deny-list; eval corpus > k; HashingEmbedder sub-tokens + drop ~0-cosine seeds |
+| R6-10, R6-11 | `3e36a7d` | busy_timeout, WAL only for files, close-on-failure; single-writer waits not crashes |
+| R6-3, R6-4, R6-5, R6-6, R6-7, R6-16, R6-17, R6-23 | (this batch) | Multilang CodeAdapter: Go type_spec + method receivers + imports; JS/TS arrows + class_heritage inheritance + TS interface methods; Rust impl-as-scope + INHERITS, no dup |
+
+Regression coverage: `tests/test_review_mega.py` (one+ test per finding; multilang gated on `[code]`). Suite green (113).
+The completeness-critic gaps (java/c/cpp, multi-writer beyond two, large-repo benchmark, real semantic embedder) remain future scope.

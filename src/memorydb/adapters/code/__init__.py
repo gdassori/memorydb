@@ -41,18 +41,18 @@ LANGS: tuple = (
              call_types=frozenset({"call_expression", "new_expression"}),
              import_types=frozenset({"import_statement"}), id_types=_ID_C),
     LangSpec(name="typescript", extensions=(".ts", ".tsx"),
-             func_types=frozenset({"function_declaration", "method_definition"}),
+             func_types=frozenset({"function_declaration", "method_definition", "method_signature"}),
              class_types=frozenset({"class_declaration", "interface_declaration"}),
              call_types=frozenset({"call_expression", "new_expression"}),
              import_types=frozenset({"import_statement"}), id_types=_ID_C),
     LangSpec(name="go", extensions=(".go",),
              func_types=frozenset({"function_declaration", "method_declaration"}),
-             class_types=frozenset({"type_declaration"}),
+             class_types=frozenset({"type_spec"}),
              call_types=frozenset({"call_expression"}),
              import_types=frozenset({"import_declaration"}), id_types=_ID_C),
     LangSpec(name="rust", extensions=(".rs",),
-             func_types=frozenset({"function_item"}),
-             class_types=frozenset({"struct_item", "enum_item", "trait_item", "impl_item"}),
+             func_types=frozenset({"function_item", "function_signature_item"}),
+             class_types=frozenset({"struct_item", "enum_item", "trait_item"}),
              call_types=frozenset({"call_expression", "macro_invocation"}),
              import_types=frozenset({"use_declaration"}), id_types=_ID_C),
 )
@@ -139,42 +139,78 @@ class CodeAdapter:
             seen[u] = n
             return u if n == 0 else f"{u}#{n}"
 
-        def walk(node, stack, enclosing, depth=0):
+        def make_node(child, qual: str, kind: str) -> str:
+            u = uid_for(qual)
+            name = qual.split(".")[-1]
+            nodes.append(Node(
+                uid=u, type=kind, name=name, body=self._text(child, src)[:2000],
+                attrs={"lang": spec.name, "file_uid": rel,
+                       "signature": self._signature(child, src),
+                       "docstring": self._docstring(child, src, spec),
+                       "start_line": child.start_point[0] + 1,
+                       "end_line": child.end_point[0] + 1},
+            ))
+            local.setdefault(name, []).append(u)
+            return u
+
+        def walk(node, stack, enclosing, depth=0, in_class=False):
             if depth > _MAX_WALK_DEPTH:     # bound hostile/pathological nesting (security I1)
                 return
             for child in node.named_children:
                 t = child.type
+                # Rust `impl [Trait for] Type { ... }` is a SCOPE on Type (not a class node): it emits
+                # INHERITS Type -> Trait and its fns become Type.methods (R6-7/R6-16).
+                if spec.name == "rust" and t == "impl_item":
+                    impl_type, trait = self._rust_impl(child)
+                    if impl_type:
+                        if trait:
+                            refs.append((f"{rel}::{impl_type}", trait, trait, Rel.INHERITS))
+                        walk(child, stack + [impl_type], enclosing, depth + 1, in_class=True)
+                    else:
+                        walk(child, stack, enclosing, depth + 1, in_class)
+                    continue
+                # Go method with a receiver -> Receiver.method, classified as a method (R6-6).
+                if spec.name == "go" and t == "method_declaration":
+                    recv, mname = self._go_method(child)
+                    if mname:
+                        qual = ".".join(stack + ([recv, mname] if recv else [mname]))
+                        walk(child, stack, make_node(child, qual, "method"), depth + 1)
+                    else:
+                        walk(child, stack, enclosing, depth + 1)
+                    continue
+                # JS/TS `const f = (a) => ...` / `const f = function(){}` -> name from the LHS (R6-4).
+                if spec.name in ("javascript", "typescript") and t == "variable_declarator":
+                    fname = self._arrow_decl(child)
+                    if fname:
+                        u = make_node(child, ".".join(stack + [fname]), "method" if in_class else "function")
+                        walk(child, stack + [fname], u, depth + 1)
+                    else:
+                        walk(child, stack, enclosing, depth + 1, in_class)
+                    continue
+
                 if t in spec.func_types or t in spec.class_types:
                     name = self._name(child, spec)
                     if not name:
-                        walk(child, stack, enclosing, depth + 1)
+                        walk(child, stack, enclosing, depth + 1, in_class)
                         continue
-                    qual = ".".join(stack + [name])
-                    u = uid_for(qual)
-                    kind = "class" if t in spec.class_types else ("method" if stack else "function")
-                    nodes.append(Node(
-                        uid=u, type=kind, name=name, body=self._text(child, src)[:2000],
-                        attrs={"lang": spec.name, "file_uid": rel,
-                               "signature": self._signature(child, src),
-                               "docstring": self._docstring(child, src, spec),
-                               "start_line": child.start_point[0] + 1,
-                               "end_line": child.end_point[0] + 1},
-                    ))
-                    local.setdefault(name, []).append(u)
-                    if t in spec.class_types:
+                    is_class = t in spec.class_types
+                    # `method` only when the immediate enclosing scope is a class (R6-19).
+                    kind = "class" if is_class else ("method" if in_class else "function")
+                    u = make_node(child, ".".join(stack + [name]), kind)
+                    if is_class:
                         for base in self._base_names(child, src, spec):
                             refs.append((u, base, base, Rel.INHERITS))
-                    walk(child, stack + [name], u, depth + 1)
+                    walk(child, stack + [name], u, depth + 1, in_class=is_class)
                 elif t in spec.import_types:
                     imports.update(self._import_names(child, src, spec))
-                    walk(child, stack, enclosing, depth + 1)
+                    walk(child, stack, enclosing, depth + 1, in_class)
                 elif t in spec.call_types:
                     name, rootname = self._callee(child, spec, src)
                     if name and enclosing:
                         refs.append((enclosing, name, rootname, Rel.CALLS))
-                    walk(child, stack, enclosing, depth + 1)
+                    walk(child, stack, enclosing, depth + 1, in_class)
                 else:
-                    walk(child, stack, enclosing, depth + 1)
+                    walk(child, stack, enclosing, depth + 1, in_class)
 
         walk(root, [], None)
 
@@ -240,11 +276,66 @@ class CodeAdapter:
         return content.splitlines()[0] if content else ""
 
     def _base_names(self, node, src: bytes, spec: LangSpec) -> list:
-        supers = node.child_by_field_name("superclasses")
-        if supers is None:
-            return []
-        return [c.text.decode("utf-8", "replace").split(".")[-1]
-                for c in supers.named_children if c.type in spec.id_types]
+        """Base/super types for an INHERITS edge, per language (R6-5)."""
+        out: list = []
+        if spec.name == "python":
+            supers = node.child_by_field_name("superclasses")
+            if supers is not None:
+                out = [c.text.decode("utf-8", "replace").split(".")[-1]
+                       for c in supers.named_children if c.type in spec.id_types]
+        elif spec.name in ("javascript", "typescript"):
+            for c in node.named_children:
+                if c.type != "class_heritage":
+                    continue
+                for h in c.named_children:                 # JS: bare ids; TS: extends/implements clauses
+                    if h.type in spec.id_types:
+                        out.append(h.text.decode("utf-8", "replace").split(".")[-1])
+                    elif h.type in ("extends_clause", "implements_clause", "extends_type_clause"):
+                        out += [g.text.decode("utf-8", "replace").split(".")[-1]
+                                for g in h.named_children if g.type in spec.id_types]
+        return out
+
+    @staticmethod
+    def _rust_impl(node):
+        """``impl [Trait for] Type`` -> (implementing type, trait or None). The last direct
+        type_identifier is the type; a preceding one is the trait (R6-7)."""
+        ids = [c.text.decode("utf-8", "replace") for c in node.named_children if c.type == "type_identifier"]
+        if not ids:
+            return None, None
+        return ids[-1], (ids[0] if len(ids) > 1 else None)
+
+    def _go_method(self, node):
+        """Go ``func (r Recv) M()`` -> ('Recv', 'M'). Receiver is the first parameter_list (R6-6)."""
+        name = node.child_by_field_name("name")
+        mname = name.text.decode("utf-8", "replace") if name is not None else None
+        if mname is None:
+            mname = next((c.text.decode("utf-8", "replace") for c in node.named_children
+                          if c.type == "field_identifier"), None)
+        receiver = node.child_by_field_name("receiver")
+        if receiver is None:
+            receiver = next((c for c in node.named_children if c.type == "parameter_list"), None)
+        recv = None
+        if receiver is not None:
+            for pd in receiver.named_children:
+                for tc in pd.named_children:
+                    if tc.type in ("type_identifier", "pointer_type", "generic_type"):
+                        recv = tc.text.decode("utf-8", "replace").lstrip("*&").split("[")[0].split(".")[-1]
+                        break
+                if recv:
+                    break
+        return recv, (mname.split(".")[-1] if mname else None)
+
+    @staticmethod
+    def _arrow_decl(node):
+        """A JS/TS ``variable_declarator`` whose value is an arrow/function -> its LHS name (R6-4)."""
+        val = node.child_by_field_name("value")
+        if val is None or val.type not in ("arrow_function", "function", "function_expression"):
+            return None
+        nm = node.child_by_field_name("name")
+        if nm is not None:
+            return nm.text.decode("utf-8", "replace").split(".")[-1]
+        return next((c.text.decode("utf-8", "replace") for c in node.named_children
+                     if c.type == "identifier"), None)
 
     def _import_names(self, node, src: bytes, spec: LangSpec) -> set:
         out: set = set()
@@ -255,6 +346,12 @@ class CodeAdapter:
                 txt = n.text.decode("utf-8", "replace")
                 out.add(txt)
                 out.add(txt.split(".")[-1])
+            # Go imports are quoted paths (`import "net/http"`), not identifiers — capture the package
+            # name (last path segment) so cross-package calls are import-scoped not bare-global (R6-17).
+            elif spec.name == "go" and n.type in ("interpreted_string_literal", "import_spec"):
+                seg = self._text(n, src).strip().strip('"').strip("`").rstrip("/").split("/")[-1]
+                if seg:
+                    out.add(seg)
             stack.extend(n.named_children)
         return out
 
