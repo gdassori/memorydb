@@ -8,6 +8,7 @@ deletions and changes drop a file's symbols by `attrs.file_uid` (NOT a file-node
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from typing import Optional
@@ -92,25 +93,27 @@ class Indexer:
                 self._delete_file(rel)
                 rep.files_deleted += 1
 
-            # Diff by content hash (force=True re-indexes everything — a recovery escape hatch).
+            # Diff by content hash (force=True re-indexes everything — a recovery escape hatch). The
+            # bytes read here for hashing are reused by the extractors (avoids re-reading; perf MR-15).
             changed = []
             for rel, path in disk.items():
                 try:
-                    data = open(path, "rb").read()
+                    with open(path, "rb") as fh:   # context manager: no leaked handle (MR-21)
+                        data = fh.read()
                 except OSError:
                     continue
                 sha = hashlib.sha256(data).hexdigest()
                 if not force and existing.get(rel, {}).get("sha256") == sha:
                     rep.files_skipped += 1
                     continue
-                changed.append((rel, path, sha))
+                changed.append((rel, path, sha, data))
 
             # PASS 1 — upsert all nodes (so cross-file edge endpoints exist in pass 2).
             deferred = []
-            for rel, path, sha in changed:
+            for rel, path, sha, data in changed:
                 affected_names |= self._symbol_names_of(rel)   # names this file is about to drop/replace
                 self._delete_file(rel)            # drop any prior symbols/file node for this path
-                merged = self._extract_all(path)
+                merged = self._extract_all(path, data)
                 try:
                     mtime = os.path.getmtime(path)
                 except OSError:
@@ -180,13 +183,31 @@ class Indexer:
     def _any_handles(self, path: str) -> bool:
         return any(getattr(ex, "handles", lambda p: True)(path) for ex in self.extractors)
 
-    def _extract_all(self, path: str) -> _Merged:
+    def _accepts_data(self, ex) -> bool:
+        """Whether ``ex.extract`` takes a ``data`` argument (cached per extractor). Lets the indexer
+        pass already-read bytes without breaking simpler extractors whose signature is ``extract(path)``."""
+        cache = self.__dict__.setdefault("_data_ok", {})
+        key = id(ex)
+        if key not in cache:
+            try:
+                params = inspect.signature(ex.extract).parameters
+                cache[key] = "data" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+            except (ValueError, TypeError):
+                cache[key] = False
+        return cache[key]
+
+    def _extract_all(self, path: str, data=None) -> _Merged:
         m = _Merged()
         for ex in self.extractors:
             if not getattr(ex, "handles", lambda p: True)(path):
                 continue
             try:
-                res = ex.extract(path)            # one extractor must never abort the whole run (MR-1)
+                # Reuse the bytes already read for hashing when the extractor accepts them (perf MR-15);
+                # one extractor must never abort the whole run (MR-1).
+                if data is not None and self._accepts_data(ex):
+                    res = ex.extract(path, data=data)
+                else:
+                    res = ex.extract(path)
             except Exception:
                 continue
             m.nodes += res.nodes
@@ -280,8 +301,12 @@ class Indexer:
             params,
         ).fetchall()
         up = un = 0
+        name_cache: dict = {}   # memoize name->uids: many pending rows share a target name (perf MR-14)
         for r in rows:
-            targets = self._resolve_name(r["dst_name"])
+            name = r["dst_name"]
+            if name not in name_cache:
+                name_cache[name] = self._resolve_name(name)
+            targets = name_cache[name]
             if len(targets) == 1 and self._safe_edge(
                 r["src_uid"], targets[0], r["relation"], r["confidence"], "treesitter"
             ):

@@ -107,6 +107,46 @@ def test_mr3_callee_edit_keeps_precise_confidence():
     assert _xconf(s, "a.py::g", "b.py::foo") == 0.97                # was the MR-3 bug: downgraded to 0.6
 
 
+# --- MR-4: embeddings stored unit-normalized; cosine still correct --------------------------
+def test_mr4_embeddings_stored_normalized_and_cosine_correct():
+    from memorydb import BruteForceVectorIndex
+    from memorydb.vector import unpack
+    s = Store(":memory:")
+    s.upsert_node(Node(uid="a", type="function", name="a"))
+    s.set_embedding(s.id_for("a"), [3.0, 4.0])                   # norm 5 -> stored as [0.6, 0.8]
+    v = list(unpack(s.conn.execute("SELECT vector FROM embeddings").fetchone()[0]))
+    assert abs((v[0] ** 2 + v[1] ** 2) ** 0.5 - 1.0) < 1e-6     # unit norm
+    score = BruteForceVectorIndex(s).search([3.0, 4.0], k=1)[0][0]
+    assert abs(score - 1.0) < 1e-6                               # same direction -> cosine 1.0
+
+
+# --- MR-12: a mixed-dimension corpus only scores the query's dimension (no zip-truncation) ---
+def test_mr12_mixed_dim_search_skips_mismatched():
+    from memorydb import BruteForceVectorIndex
+    s = Store(":memory:")
+    s.upsert_node(Node(uid="d2", type="function", name="d2"))
+    s.upsert_node(Node(uid="d3", type="function", name="d3"))
+    s.set_embedding(s.id_for("d2"), [1.0, 0.0])                 # dim 2
+    s.set_embedding(s.id_for("d3"), [1.0, 0.0, 0.0])           # dim 3
+    res = BruteForceVectorIndex(s).search([1.0, 0.0], k=10)    # dim-2 query
+    assert [s.get_nodes([nid])[0]["uid"] for _, nid in res] == ["d2"]
+
+
+# --- MR-5: streaming refresh embeds all dirty nodes and clears the flag ----------------------
+def test_mr5_streaming_embeds_all_and_clears_dirty():
+    from memorydb import HashingEmbedder
+    from memorydb.embedding_pipeline import EmbeddingPipeline
+    s = Store(":memory:")
+    for i in range(5):
+        s.upsert_node(Node(uid=f"n{i}", type="function", name=f"n{i}", body="x"))
+    s.commit()
+    assert len(s.dirty_node_ids()) == 5
+    rep = EmbeddingPipeline(s, HashingEmbedder(), batch_size=2).refresh()
+    assert rep.embedded == 5 and rep.batches == 3               # 5 / batch 2 = 3 batches
+    assert s.dirty_node_ids() == []
+    assert s.conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 5
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

@@ -98,13 +98,14 @@ class CodeAdapter:
         spec = self.registry.spec_for(path)
         return spec.name if spec else None
 
-    def extract(self, path: str) -> Extraction:
+    def extract(self, path: str, data: Optional[bytes] = None) -> Extraction:
         spec = self.registry.spec_for(path)
         if spec is None:
             return Extraction()
         rel = os.path.relpath(path, self.repo_root).replace(os.sep, "/")
-        with open(path, "rb") as fh:
-            data = fh.read()
+        if data is None:                       # reuse the indexer's already-read bytes when given (MR-15)
+            with open(path, "rb") as fh:
+                data = fh.read()
         # Guard the whole parse+extract: a hostile or pathological file (e.g. a deeply nested AST that
         # blows Python's recursion limit) must never abort the index run (security I1). _extract_tree
         # also depth-caps its own walk.

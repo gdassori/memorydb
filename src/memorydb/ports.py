@@ -25,6 +25,7 @@ class IntentClassifier(Protocol):
 
 @runtime_checkable
 class Extractor(Protocol):
-    def extract(self, path: str):
-        """Parse a file/dir and return ``(nodes, edges)`` to upsert into the substrate."""
+    def extract(self, path: str, data: bytes = None):
+        """Parse a file and return an ``Extraction`` (nodes, edges, pending) to upsert. ``data`` is the
+        file's already-read bytes, passed by the indexer to avoid a re-read (optional)."""
         ...

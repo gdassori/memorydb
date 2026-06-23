@@ -7,6 +7,7 @@ optional ``[vector]`` accelerator behind the same interface (not implemented in 
 from __future__ import annotations
 
 import array
+import heapq
 import math
 import sqlite3
 from typing import Optional, Sequence
@@ -22,14 +23,16 @@ def unpack(blob: bytes) -> array.array:
     return a
 
 
-def _cosine(q: Sequence[float], q_norm: float, v: Sequence[float]) -> float:
-    dot = sum(a * b for a, b in zip(q, v))
-    v_norm = math.sqrt(sum(x * x for x in v)) or 1.0
-    return dot / (q_norm * v_norm)
+def normalize(vec: Sequence[float]) -> list:
+    """Scale to unit L2 norm (a zero vector stays zero). Embeddings are stored normalized so cosine
+    reduces to a dot product at query time (perf MR-4)."""
+    n = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return [x / n for x in vec]
 
 
 class BruteForceVectorIndex:
-    """Exact cosine over every stored embedding. O(n) per query (TD-004)."""
+    """Exact cosine over every stored embedding. O(n) per query (TD-004). Since both the query and the
+    stored vectors are unit-normalized, cosine is a plain dot product — no per-vector L2 norm."""
 
     def __init__(self, store) -> None:
         self.store = store
@@ -40,22 +43,24 @@ class BruteForceVectorIndex:
         k: int = 10,
         types: Optional[Sequence[str]] = None,
     ) -> list[tuple[float, int]]:
-        q = list(query_vec)
-        q_norm = math.sqrt(sum(x * x for x in q)) or 1.0
-        # Push the type filter into SQL so we don't unpack vectors we'd discard (perf I7).
+        q = normalize(list(query_vec))
+        dim = len(q)
+        # Only score vectors of the query's dimension — a mixed-dim corpus would otherwise truncate via
+        # zip() and yield garbage scores (correctness MR-12). Type filter is pushed into SQL too (I7).
         sql = ("SELECT e.node_id AS node_id, e.vector AS vector, n.uid AS uid "
-               "FROM embeddings e JOIN nodes n ON n.id = e.node_id")
-        params: list = []
+               "FROM embeddings e JOIN nodes n ON n.id = e.node_id WHERE e.dim = ?")
+        params: list = [dim]
         if types:
-            sql += " WHERE n.type IN (%s)" % ",".join("?" for _ in types)
-            params = list(types)
+            sql += " AND n.type IN (%s)" % ",".join("?" for _ in types)
+            params += list(types)
         rows = self.store.conn.execute(sql, params).fetchall()
-        scored = [(_cosine(q, q_norm, unpack(r["vector"])), r["node_id"], r["uid"]) for r in rows]
-        # Tiebreak on uid (not score alone, and not node_id which churns when the indexer re-inserts
-        # nodes): equal-score results are otherwise ordered by SQLite's unspecified row order, making
-        # top-k seeds and EXPLAIN ranking non-deterministic (R3L-4).
-        scored.sort(key=lambda t: (-t[0], t[2]))
-        return [(s, nid) for s, nid, _uid in scored[: max(0, k)]]  # clamp negative k to empty (I13)
+        scored = [(sum(a * b for a, b in zip(q, unpack(r["vector"]))), r["node_id"], r["uid"])
+                  for r in rows]
+        # k largest by score, ties broken by uid asc (churn-invariant determinism, R3L-4). nsmallest on
+        # (-score, uid) is that ordering in O(n log k) instead of a full O(n log n) sort (perf MR-22);
+        # max(0, k) clamps a negative k to empty (I13).
+        top = heapq.nsmallest(max(0, k), scored, key=lambda t: (-t[0], t[2]))
+        return [(s, nid) for s, nid, _uid in top]
 
 
 class SqliteVecIndex:

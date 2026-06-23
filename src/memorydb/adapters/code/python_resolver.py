@@ -52,11 +52,13 @@ class PythonResolver:
     def lang_of(self, path: str) -> Optional[str]:
         return "python" if path.endswith(".py") else None
 
-    def extract(self, path: str) -> Extraction:
+    def extract(self, path: str, data: Optional[bytes] = None) -> Extraction:
         rel = os.path.relpath(path, self.repo_root).replace(os.sep, "/")
         try:
-            with open(path, "rb") as fh:
-                text = fh.read().decode("utf-8", "replace")
+            if data is None:                   # reuse the indexer's already-read bytes when given (MR-15)
+                with open(path, "rb") as fh:
+                    data = fh.read()
+            text = data.decode("utf-8", "replace")
             tree = ast.parse(text)
             stab = symtable.symtable(text, rel, "exec")
             return _Extractor(rel, text, tree, stab).run()

@@ -75,11 +75,15 @@ class EmbeddingPipeline:
         self.model = model
 
     def refresh(self) -> EmbedReport:
-        """(Re)embed every `embed_dirty` node in batches. Idempotent: a no-op when nothing is dirty."""
-        dirty = self.store.dirty_nodes()
+        """(Re)embed every `embed_dirty` node, streaming the dirty set id-by-id and fetching each
+        batch's full rows lazily so peak memory is O(batch_size), not the whole dirty corpus with
+        bodies (perf MR-5). Idempotent: a no-op when nothing is dirty."""
+        ids = self.store.dirty_node_ids()
         rep = EmbedReport()
-        for i in range(0, len(dirty), self.batch_size):
-            batch = dirty[i : i + self.batch_size]
+        for i in range(0, len(ids), self.batch_size):
+            batch = self.store.get_nodes(ids[i : i + self.batch_size])
+            if not batch:
+                continue
             rep.batches += 1
             if self._embed_batch(batch) or self._embed_batch(batch):  # one retry
                 rep.embedded += len(batch)

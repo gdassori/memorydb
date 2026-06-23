@@ -13,7 +13,7 @@ from typing import Optional, Sequence
 
 from .migrations import migrate
 from .models import Node
-from .vector import pack
+from .vector import normalize, pack
 
 
 class Store:
@@ -108,10 +108,11 @@ class Store:
         self.conn.execute("UPDATE nodes SET embed_dirty = 1 WHERE id IN (?, ?)", (s, d))
 
     def set_embedding(self, node_id: int, vector: Sequence[float], model: Optional[str] = None) -> None:
+        unit = normalize(vector)   # store unit-normalized so query-time cosine is a dot product (MR-4)
         self.conn.execute(
             "INSERT INTO embeddings(node_id, dim, vector, model) VALUES(?, ?, ?, ?) "
             "ON CONFLICT(node_id) DO UPDATE SET dim=excluded.dim, vector=excluded.vector, model=excluded.model",
-            (node_id, len(vector), pack(vector), model),
+            (node_id, len(unit), pack(unit), model),
         )
         self.conn.execute("UPDATE nodes SET embed_dirty = 0 WHERE id = ?", (node_id,))
 
@@ -128,6 +129,12 @@ class Store:
     def dirty_nodes(self) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM nodes WHERE embed_dirty = 1").fetchall()
         return [self._row_to_node(r) for r in rows]
+
+    def dirty_node_ids(self) -> list[int]:
+        """Just the ids of stale nodes (uses idx_nodes_dirty). The embedding pipeline streams these in
+        batches and fetches each batch's full rows lazily, so peak memory is O(batch) not O(corpus)
+        with full bodies (perf MR-5)."""
+        return [r[0] for r in self.conn.execute("SELECT id FROM nodes WHERE embed_dirty = 1")]
 
     @staticmethod
     def _row_to_node(row: sqlite3.Row) -> dict:
