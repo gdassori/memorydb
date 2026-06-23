@@ -8,7 +8,11 @@ version = "0.0.1"
 description = "Embedded knowledge substrate (relational + graph + vectors) for local LLMs"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []  # zero-dependency core (TD-004)
+dependencies = ["pydantic>=2"]  # models are pydantic BaseModels (TD-004, revised 2026-06-22)
+
+[project.scripts]
+memorydb = "memorydb.cli:main"
+memorydb-eval = "memorydb.eval.cli:main"
 
 [project.optional-dependencies]
 vector = ["sqlite-vec>=0.1.0"]            # ANN accelerator (TD-004)
@@ -18,6 +22,11 @@ dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# schema.sql is read at import time (migrations.py) — it MUST ship in the wheel, or a non-editable
+# `pip install` produces an unimportable package (FileNotFoundError). Editable installs hide this.
+[tool.setuptools.package-data]
+memorydb = ["schema.sql"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

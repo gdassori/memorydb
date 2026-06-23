@@ -7,17 +7,19 @@ Forward-only: opening a DB newer than this build raises rather than corrupting d
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+from pydantic import BaseModel, ConfigDict
 
 # Migration 1's body. Pure DDL (no connection pragmas), so it can run statement-by-statement
 # inside the per-migration transaction (executescript would auto-commit and break atomicity).
 _BASELINE = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
-@dataclass(frozen=True)
-class Migration:
+class Migration(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     version: int
     name: str
     apply: Callable[[sqlite3.Connection], None]
@@ -39,13 +41,46 @@ def _m2_meta(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
 
+def _m3_file_uid_index(conn: sqlite3.Connection) -> None:
+    # An indexable handle on attrs.file_uid: a VIRTUAL generated column (computed, not stored) plus an
+    # index, so deleting a file's symbols is an indexed lookup instead of a full json_extract scan
+    # (perf I8). Also a partial index on the staleness flag so refresh() finds the dirty set without
+    # scanning every node (perf I12).
+    conn.execute(
+        "ALTER TABLE nodes ADD COLUMN file_uid TEXT "
+        "GENERATED ALWAYS AS (json_extract(attrs, '$.file_uid')) VIRTUAL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_file_uid ON nodes(file_uid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_dirty ON nodes(embed_dirty) WHERE embed_dirty = 1")
+
+
+def _m4_pending_edges(conn: sqlite3.Connection) -> None:
+    # Durable store of unresolved/coarse by-name edges (src_uid --relation--> dst_name). Persisting
+    # them lets the indexer re-resolve a caller's reference whenever the callee's name appears or
+    # disappears in ANY file, not only when the caller file itself is re-extracted — otherwise editing
+    # a callee file cascade-deletes the cross-file edge and it is never rebuilt (data-integrity R3L-1).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pending_edges ("
+        "  src_uid    TEXT NOT NULL,"
+        "  src_file   TEXT NOT NULL,"   # the relpath that emitted it, so re-indexing a file can clear its rows
+        "  dst_name   TEXT NOT NULL,"
+        "  relation   TEXT NOT NULL,"
+        "  confidence REAL NOT NULL DEFAULT 0.3,"
+        "  PRIMARY KEY (src_uid, dst_name, relation))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_dst_name ON pending_edges(dst_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_src_file ON pending_edges(src_file)")
+
+
 MIGRATIONS: list[Migration] = [
-    Migration(1, "baseline", _m1_baseline),
-    Migration(2, "meta", _m2_meta),
+    Migration(version=1, name="baseline", apply=_m1_baseline),
+    Migration(version=2, name="meta", apply=_m2_meta),
+    Migration(version=3, name="file_uid_index", apply=_m3_file_uid_index),
+    Migration(version=4, name="pending_edges", apply=_m4_pending_edges),
     # Future (documented in specs, not yet coded):
-    #   3: node_history / edge_history (TD-009 temporal identity)
-    #   4: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
-    #   5: concepts / concept_edges (concept-ontology-layer)
+    #   5: node_history / edge_history (TD-009 temporal identity)
+    #   6: vec0 ensure (sqlite-vec, created lazily at the known embedding dim — C3)
+    #   7: concepts / concept_edges (concept-ontology-layer)
 ]
 LATEST = MIGRATIONS[-1].version
 

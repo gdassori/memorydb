@@ -1,7 +1,8 @@
 ---
 title: "Public API facade — the MemoryDB class"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-22
 author: claude
 related_tds: [TD-002]
 components: [api, store, planner, indexer]
@@ -103,10 +104,25 @@ those of the indexer/planner.
 
 ## Tasks
 
-- [ ] `MemoryDB.open` wiring with injectable ports + sane defaults
-- [ ] `index` / `refresh_embeddings` / `ask` / `locate` / `explain` / `context`
-- [ ] export from `__init__`; update README quickstart
-- [ ] zero-dep facade tests
+- [x] `MemoryDB.open` wiring with injectable ports + sane defaults
+- [x] `index` / `refresh_embeddings` / `ask` / `locate` / `explain` / `context`
+- [x] export from `__init__`; update README quickstart
+- [x] zero-dep facade tests
+
+## Implementation notes (2026-06-22)
+
+- `src/memorydb/api.py` — `MemoryDB` facade, `ExtractorRegistry.default()` (degrades to no extractor
+  when the `[code]` extra is absent), and `ContextResult` + a **placeholder** token-budgeted packer
+  (`_pack_*`, ≈4 chars/token). The dedicated [context-builder-packing](context-builder-packing.md)
+  spec will supersede the packer behind the same `ContextResult` shape.
+- Added `make_vector_index(store)` (vector.py) — returns `SqliteVecIndex` when buildable, else
+  `BruteForceVectorIndex`; forward-compatible with the sqlite-vec spec.
+- Promoted the planner's intent handlers to public `locate()` / `explain()` so the facade composes
+  them without reaching into privates; `retrieve()` dispatches to them.
+- `Store.get_meta` / `set_meta` back the C3 dim/model compatibility check; `open()` records
+  `embed_model` / `embed_dim` and warns on a mismatch.
+- `index()` builds the Indexer with `embedder=None` and embeds via `refresh_embeddings()` so
+  embedding happens in exactly one place (spec step 2).
 
 ## Open questions
 

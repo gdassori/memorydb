@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import array
 import math
+import sqlite3
 from typing import Optional, Sequence
 
 
@@ -41,18 +42,20 @@ class BruteForceVectorIndex:
     ) -> list[tuple[float, int]]:
         q = list(query_vec)
         q_norm = math.sqrt(sum(x * x for x in q)) or 1.0
-        rows = self.store.conn.execute(
-            "SELECT e.node_id AS node_id, e.vector AS vector, n.type AS type "
-            "FROM embeddings e JOIN nodes n ON n.id = e.node_id"
-        ).fetchall()
-        type_set = set(types) if types else None
-        scored: list[tuple[float, int]] = []
-        for r in rows:
-            if type_set is not None and r["type"] not in type_set:
-                continue
-            scored.append((_cosine(q, q_norm, unpack(r["vector"])), r["node_id"]))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return scored[:k]
+        # Push the type filter into SQL so we don't unpack vectors we'd discard (perf I7).
+        sql = ("SELECT e.node_id AS node_id, e.vector AS vector, n.uid AS uid "
+               "FROM embeddings e JOIN nodes n ON n.id = e.node_id")
+        params: list = []
+        if types:
+            sql += " WHERE n.type IN (%s)" % ",".join("?" for _ in types)
+            params = list(types)
+        rows = self.store.conn.execute(sql, params).fetchall()
+        scored = [(_cosine(q, q_norm, unpack(r["vector"])), r["node_id"], r["uid"]) for r in rows]
+        # Tiebreak on uid (not score alone, and not node_id which churns when the indexer re-inserts
+        # nodes): equal-score results are otherwise ordered by SQLite's unspecified row order, making
+        # top-k seeds and EXPLAIN ranking non-deterministic (R3L-4).
+        scored.sort(key=lambda t: (-t[0], t[2]))
+        return [(s, nid) for s, nid, _uid in scored[: max(0, k)]]  # clamp negative k to empty (I13)
 
 
 class SqliteVecIndex:
@@ -67,3 +70,20 @@ class SqliteVecIndex:
             "SqliteVecIndex needs the [vector] extra (sqlite-vec). "
             "Use BruteForceVectorIndex until then (TD-004)."
         )
+
+
+def make_vector_index(store):
+    """Best-available ``VectorIndex`` behind one call: the sqlite-vec ANN accelerator when the
+    ``[vector]`` extra is present, else the stdlib brute-force index (TD-004). The facade uses
+    this so callers get acceleration for free once it lands, without changing their code. When
+    ``SqliteVecIndex`` becomes real it will own the dim/``vec0`` setup; until then this degrades
+    cleanly to the exact brute-force scan.
+
+    The except covers every way the accelerator can be unavailable (C7): the current stub raises
+    ``NotImplementedError``; a real impl can fail because the extension file is missing
+    (``sqlite3.OperationalError``) or because this Python's sqlite was built without
+    ``enable_load_extension`` (``AttributeError``), or the package isn't installed (``ImportError``)."""
+    try:
+        return SqliteVecIndex(store)
+    except (NotImplementedError, ImportError, AttributeError, sqlite3.OperationalError):
+        return BruteForceVectorIndex(store)

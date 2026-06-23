@@ -23,6 +23,7 @@ class Store:
         # Connection pragmas live here (not in schema.sql) so the schema stays pure DDL.
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL, avoids a full fsync per commit
         migrate(self.conn)  # apply pending schema migrations (TD-003 / schema-migrations spec)
 
     # --- lifecycle ---------------------------------------------------------
@@ -51,6 +52,18 @@ class Store:
     def id_for(self, uid: str) -> Optional[int]:
         row = self.conn.execute("SELECT id FROM nodes WHERE uid = ?", (uid,)).fetchone()
         return row[0] if row else None
+
+    # --- meta (key/value substrate metadata; migration 2) ------------------
+    def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
 
     # --- writes ------------------------------------------------------------
     def upsert_node(self, node: Node) -> int:

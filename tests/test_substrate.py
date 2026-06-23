@@ -1,6 +1,6 @@
 """v0 substrate tests (TD-007 routing, TD-006 staleness, recursive-CTE traversal).
 
-Runs with zero third-party deps: `python tests/test_substrate.py` or `pytest`.
+Runs with core deps only (pydantic, no optional extras): `python tests/test_substrate.py` or `pytest`.
 """
 from __future__ import annotations
 

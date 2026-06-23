@@ -1,7 +1,8 @@
 ---
 title: "Retrieval-quality evaluation harness"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-22
 author: claude
 related_tds: [TD-007, TD-005]
 components: [eval]
@@ -94,12 +95,30 @@ are opt-in and may use a real embedder.
 
 ## Tasks
 
-- [ ] metrics (precision/recall/F1, recall@k, MRR, nDCG) as pure functions
-- [ ] `Evaluator.run` over a suite; JSON + table output
-- [ ] sample suite fixture (repo + labeled `cases.jsonl`)
-- [ ] baseline compare (`memorydb-eval compare a.json b.json`)
-- [ ] confidence-thresholded LOCATE precision (TD-005 tie-in)
-- [ ] zero-dep tests (metric math / e2e sample / compare)
+- [x] metrics (precision/recall/F1, recall@k, MRR, nDCG) as pure functions
+- [x] `Evaluator.run` over a suite; JSON + table output
+- [x] sample suite fixture (repo + labeled `cases.jsonl`)
+- [x] baseline compare (`memorydb-eval compare a.json b.json`)
+- [x] confidence-thresholded LOCATE precision (TD-005 tie-in)
+- [x] zero-dep tests (metric math / e2e sample / compare)
+
+## Implementation notes (2026-06-22)
+
+- `src/memorydb/eval/__init__.py` — metrics as pure functions (`precision/recall/f1/recall_at_k/
+  mrr/ndcg_at_k`, all div-by-zero-guarded; nDCG takes optional graded `gains`), `EvalCase`,
+  `Scorecard` (`to_dict`/`from_dict`), `Evaluator.run`, `load_suite`, `evaluate_suite`, `compare`.
+- `Evaluator` routes by case intent: **LOCATE** → `db.locate(query)` src_uids, scored over *all*
+  returned and over only ≥0.9-confidence ones (`precision_high`, the TD-005 coarse-edge column);
+  **EXPLAIN** → `db.explain` with a deterministic ranking (vector seeds first, then the subgraph by
+  id). A case whose any `expected_uid` is absent from the index is flagged **broken** and excluded
+  from aggregates (label-drift guard).
+- `src/memorydb/eval/cli.py` — `memorydb-eval run <suite> [-k] [--json OUT] [--embedder]` and
+  `compare <baseline> <new>` (▲/▼ deltas). Reuses the main CLI's `_Parser` + `_resolve_embedder`.
+- `eval/suites/sample/` — a 2-file Python fixture (`notifications.py`, `jobs.py`) + `cases.jsonl`.
+  Scores: LOCATE f1 1.0, precision 1.0 but **precision@≥0.9 0.5** (the cross-file caller is a
+  by-name pending edge at conf 0.6 — exactly the coarse-edge story); EXPLAIN recall@10 / MRR / nDCG 1.0.
+- Build-order note honored: this harness now exists *before* hybrid-ranker / sqlite-vec, so their
+  confidence-tier and weight changes can be validated run-over-run via `compare`.
 
 ## Open questions
 

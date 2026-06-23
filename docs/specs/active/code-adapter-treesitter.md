@@ -1,6 +1,7 @@
 ---
 title: "CodeAdapter — multilang symbol & coarse-edge extraction via tree-sitter"
-status: active
+status: completed
+completed: 2026-06-22
 created: 2026-06-22
 author: claude
 related_tds: [TD-005, TD-002, TD-006]

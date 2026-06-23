@@ -1,6 +1,7 @@
 ---
 title: "Schema versioning & forward migrations"
-status: active
+status: completed
+completed: 2026-06-22
 created: 2026-06-22
 author: claude
 related_tds: [TD-003]

@@ -1,6 +1,7 @@
 ---
 title: "Graph-aware embedding pipeline"
-status: active
+status: completed
+completed: 2026-06-22
 created: 2026-06-22
 author: claude
 related_tds: [TD-006, TD-002, TD-004]
