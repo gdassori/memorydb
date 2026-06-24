@@ -252,7 +252,10 @@ class ContextBuilder:
         # Only edges with BOTH endpoints included can be emitted — filter before sorting (PR3-5).
         incident = [e for e in edges if e["src"] in included and e["dst"] in included]
         lines, spent = [], 0
-        for e in sorted(incident, key=lambda x: (-x.get("confidence", 0.0), x["src"], x["dst"])):
+        # `relation` completes the total order: two edges between the same pair at equal confidence
+        # (e.g. A INHERITS B + A CALLS B) would otherwise render in plan-dependent order (RR3-1; same
+        # class as MR-17, which fixed the node path but missed this edge path).
+        for e in sorted(incident, key=lambda x: (-x.get("confidence", 0.0), x["src"], x["dst"], x.get("relation", ""))):
             line = f"{_clip(_qual(e['src']), 80)} --{e['relation']}--> {_clip(_qual(e['dst']), 80)}"
             c = self.counter.count(line)
             if spent + c > cap:

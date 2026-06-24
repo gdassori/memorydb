@@ -80,7 +80,9 @@ def references_to(store, name: str) -> list[dict]:
         "JOIN edges e ON e.dst = tgt.id "
         "JOIN nodes src ON src.id = e.src "
         "WHERE tgt.name = :n OR tgt.uid = :n "
-        "ORDER BY e.confidence DESC, src.uid"
+        # e.relation completes the total order — two edges from the same src at equal confidence but
+        # different relations would otherwise tie and fall to plan-dependent rowid order (RR3-1).
+        "ORDER BY e.confidence DESC, src.uid, e.relation"
     )
     return [dict(r) for r in store.conn.execute(sql, {"n": name}).fetchall()]
 
@@ -126,6 +128,8 @@ def subgraph_edges(store, node_ids: Sequence[int]) -> list[dict]:
         "JOIN _subgraph_ids a ON a.id = e.src "
         "JOIN _subgraph_ids b ON b.id = e.dst "
         "JOIN nodes s ON s.id = e.src JOIN nodes t ON t.id = e.dst "
-        "ORDER BY e.confidence DESC"
+        # total order so the subgraph edge list is plan-independent (RR3-1); the context builder
+        # re-sorts, but a deterministic source keeps every consumer stable.
+        "ORDER BY e.confidence DESC, s.uid, t.uid, e.relation"
     )
     return [dict(r) for r in conn.execute(sql).fetchall()]

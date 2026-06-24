@@ -73,3 +73,31 @@ EXPLAIN+LOCATE) → **0 invariant violations, 0 injection escapes**.
 `_safe` verified **idempotent** (`sym` is `_safe`-d then re-handled in the LOCATE fallback). Completeness-critic
 notes carried forward: the threat model is **LLM-only** (spec lines 14–16) — no strict-CommonMark renderer is in the
 loop, which is why the `<hr>`/`<ol>`/link-ref vectors are Low.
+
+## Fourth round — broad convergence check (2026-06-24)
+
+A fourth review deliberately **broadened beyond markdown-injection** (which was by now heavily fuzzed) to
+budget arithmetic, determinism, robustness on degenerate planner results, the planner/facade/CLI integration
+contract, the adapter caps, and whether the round-2 fixes regressed → **2 raised / 1 confirmed / 1 refuted**.
+The broad surface yielded **no new reachable defect** — only one Low determinism nit. Suite **149 green**.
+
+| ID | Sev | Summary | Status |
+|----|-----|---------|--------|
+| RR3-1 | Low (determinism) | the `_relationships` edge sort key `(-conf, src, dst)` omitted `relation`, so equal-confidence edges between the same pair (`class A(B): x = B()` → `A INHERITS B` + `A CALLS B`, both conf 1.0) rendered in SQLite-plan-dependent order — same class as MR-17 (node path) but on the edge path | ✅ appended `relation` to the key; also added `ORDER BY` tiebreaks to `query.references_to` (LOCATE) and `query.subgraph_edges` so the source is plan-independent too |
+
+**Refuted (independently re-verified by me, not just the panel):** "the `**Relationships**` header is unaccounted
+in `used_tokens`, so the rendered text exceeds budget at small budgets." Empirically **false** — a sweep of
+budgets 1..299 over a relationships-rendering subgraph found **0 cases** of `count(text) > budget_tokens`: the
+`_SAFETY = 0.9` margin absorbs the ~5-token header. No change made (the meta-pattern warns against gratuitous fixes).
+
+**Not raised (documented as unreachable):** `ContextBuilder.build()` raises `KeyError`/`TypeError` on hand-built
+results missing `id`/`uid`/`relation` or with `confidence=None`, but the real `api.py`/`cli.py` path is safe —
+`get_nodes()` guarantees `int id` + `uid` and `subgraph_edges()`/`references_to()` draw from `NOT NULL` columns.
+Worth guarding only if `build()` is ever promoted to a public entry point for arbitrary dicts.
+
+### Convergence
+
+Severity trajectory across rounds: **High (C2) → Medium (RR2-1) → Low (RR3-1)**, with the finding count falling
+8 → 1 and the broad round-4 audit surfacing nothing outside the (now-fuzzed) sanitization surface. The cascade has
+**converged**: remaining theoretical items are LLM-only-sink markdown nits (documented trade-offs) and
+unreachable defensive-coding gaps. PR #3 is clean.

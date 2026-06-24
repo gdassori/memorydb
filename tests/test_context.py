@@ -216,6 +216,21 @@ def test_rr2_safe_run_aware_no_snakecase_overreach():
     assert "__init__ initializes the thing" in res.text and "\\__init__" not in res.text
 
 
+def test_rr3_1_relationships_edge_order_deterministic():
+    """Two edges between the same pair at equal confidence but different relations must render in a
+    stable, input-order-independent order — the sort key includes `relation` (RR3-1)."""
+    base = {"intent": "EXPLAIN", "seeds": [1, 2], "depths": {1: 0, 2: 0},
+            "nodes": [_node("m.py::A", name="A", type="class"),
+                      dict(_node("m.py::B", name="B", type="class"), id=2)]}
+    e_ic = [{"src": "m.py::A", "dst": "m.py::B", "relation": "INHERITS", "confidence": 1.0},
+            {"src": "m.py::A", "dst": "m.py::B", "relation": "CALLS", "confidence": 1.0}]
+    a = ContextBuilder().build({**base, "edges": e_ic}, 2000).text
+    b = ContextBuilder().build({**base, "edges": list(reversed(e_ic))}, 2000).text
+    assert a == b                                                    # same content, same render order
+    # CALLS sorts before INHERITS (relation asc tiebreak) regardless of input order
+    assert a.index("A --CALLS--> B") < a.index("A --INHERITS--> B")
+
+
 def test_rr2_1_setext_equals_escaped_no_h1():
     """A leading '='/'==' is a setext-H1 underline — escaping it was dropped by the run-aware rewrite
     (RR2-1 regression). A '=' docstring under the signature line must not forge an <h1>."""
