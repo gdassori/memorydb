@@ -10,8 +10,10 @@ from .context import ContextBuilder, ContextResult, HeuristicCounter
 from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
 from .indexer import IgnoreMatcher, Indexer, IndexReport
+from .filters import build_filter_query
 from .models import Edge, Intent, Node, Rel
-from .planner import DefaultIntentClassifier, RetrievalPlanner
+from .planner import DefaultIntentClassifier, IntentResult, LLMIntentClassifier, RetrievalPlanner
+from .ports import LLMClient
 from .store import Store
 from .vector import BruteForceVectorIndex, SqliteVecIndex, make_vector_index, pack, unpack
 
@@ -33,6 +35,10 @@ __all__ = [
     "unpack",
     "RetrievalPlanner",
     "DefaultIntentClassifier",
+    "LLMIntentClassifier",
+    "IntentResult",
+    "LLMClient",
+    "build_filter_query",
     "HashingEmbedder",
     "EmbeddingPipeline",
     "DefaultSerializer",

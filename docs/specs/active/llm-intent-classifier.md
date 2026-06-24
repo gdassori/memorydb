@@ -1,7 +1,8 @@
 ---
 title: "LLM intent classifier & the FILTER path"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-25
 author: claude
 related_tds: [TD-007, TD-002]
 components: [planner, ports]
@@ -119,11 +120,34 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
 
 ## Tasks
 
-- [ ] `LLMClient` port + `IntentResult` schema + validation
-- [ ] `LLMIntentClassifier.analyze/classify` with cache + fallback chain
-- [ ] allowlisted FILTER→SQL builder (parameterized) + planner `_filter()`
-- [ ] symbol-existence guard + low-confidence→EXPLAIN
-- [ ] zero-dep tests (routing / parameterization / injection / fallback / hallucination)
+- [x] `LLMClient` port + `IntentResult` schema + validation
+- [x] `LLMIntentClassifier.analyze/classify` with cache + fallback chain
+- [x] allowlisted FILTER→SQL builder (parameterized) + planner `_filter()`
+- [x] symbol-existence guard + low-confidence→EXPLAIN
+- [x] zero-dep tests (routing / parameterization / injection / fallback / hallucination)
+
+## Implementation notes (2026-06-25)
+
+- **Pydantic, not dataclass.** `IntentResult` is a `pydantic.BaseModel` (TD-004); `confidence` is validated
+  to `[0, 1]` via `Field(ge=0, le=1)`, so an out-of-range model reply is a parse failure → regex fallback.
+- **`LLMClient` port** added to `ports.py` (`complete(system, user) -> str`); no provider imported (TD-002).
+- **Fallback chain.** `LLMIntentClassifier._analyze_uncached` wraps the call in a broad `except`: timeout,
+  empty/invalid JSON (`_extract_json` tolerates a ```` ```json ```` fence + surrounding prose), or schema/range
+  violation all return `IntentResult(intent=fallback.classify(query))`. It never raises to the caller.
+- **Symbol guard lives in the planner, injected as a callback.** The spec lists the hallucinated-symbol
+  downgrade as a classifier step, but verifying existence needs the store. To keep the classifier store-free
+  (TD-002) it takes a `symbol_exists: Callable[[str], bool]`; `RetrievalPlanner.__init__` auto-wires it to a
+  `nodes` lookup (name-or-uid, file nodes excluded) for any analyze-capable classifier that doesn't set one.
+  `analyze()` applies low-confidence→EXPLAIN and the symbol downgrade; results are cached by query string.
+- **LOCATE uid (C4).** An LLM-supplied `symbol` is tried as the *first* `locate()` candidate, so a uid resolves
+  to exactly one target and the ambiguity grouping collapses.
+- **mtime is epoch, not ISO (supersedes the C5 remediation).** The shipped indexer stamps `attrs.mtime` as an
+  epoch number (`os.path.getmtime`), so `filters.build_filter_query` coerces a `since` date/datetime to a float
+  epoch (UTC) and binds it — a numeric comparison against the stored value, **no re-index**. The value stays
+  bound (injection-safe). `since` uses an explicit `JOIN nodes f ON f.uid = n.file_uid AND f.type='file'`.
+- **FILTER builder** (`filters.py`) iterates a fixed allowlist (deterministic SQL/params), drops unknown/empty
+  keys (returned for logging), excludes file nodes, and orders by `uid`. The planner re-sorts the fetched nodes
+  by uid (`get_nodes` is unordered). Vector reranking of the FILTER set is deferred (deterministic order for v1).
 
 ## Open questions
 
