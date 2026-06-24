@@ -248,22 +248,29 @@ class RetrievalPlanner:
     def _filter(self, result: "IntentResult", k: int = 5) -> dict:
         """FILTER: an allowlisted, parameterized SQL query over symbol attributes (no injection — every
         value is bound). Returns the matched nodes (file nodes excluded), in deterministic uid order,
-        capped at ``k`` (the caller's result-size knob, like LOCATE/EXPLAIN)."""
-        sql, params, dropped = build_filter_query(result.filters, limit=k)
-        if dropped:
-            _LOG.debug("FILTER dropped unsupported/empty/non-scalar keys: %s", dropped)
-        if sql is None:                           # nothing usable -> clean empty result (spec)
-            return {"intent": "FILTER", "filters": result.filters, "nodes": [], "matched_ids": [],
-                    "dropped_keys": dropped, "note": "no usable filter predicate"}
+        capped at ``k`` with a ``truncated`` flag so the cap is never silent (re-review P4R-4).
+        ``filters`` is copied out so a caller can't mutate the cached IntentResult's dict (P4R-3)."""
+        capped = k if isinstance(k, int) and k > 0 else None
+        filt = dict(result.filters)
+        empty = {"intent": "FILTER", "filters": filt, "nodes": [], "matched_ids": [],
+                 "dropped_keys": [], "truncated": False}
         try:
+            # fetch one past the cap so we can SIGNAL truncation rather than silently dropping matches.
+            sql, params, dropped = build_filter_query(result.filters,
+                                                      limit=(capped + 1 if capped else None))
+            if dropped:
+                _LOG.debug("FILTER dropped unsupported/empty/non-scalar keys: %s", dropped)
+            if sql is None:                       # nothing usable -> clean empty result (spec)
+                return {**empty, "dropped_keys": dropped, "note": "no usable filter predicate"}
             ids = [r[0] for r in self.store.conn.execute(sql, params).fetchall()]
-        except Exception as exc:                  # a DB error must not raise to the caller (spec)
+        except Exception as exc:                  # builder/DB error must not raise to the caller (spec)
             _LOG.debug("FILTER query failed (%s); returning empty result", exc)
-            return {"intent": "FILTER", "filters": result.filters, "nodes": [], "matched_ids": [],
-                    "dropped_keys": dropped, "note": "filter query error"}
+            return {**empty, "note": "filter query error"}
+        truncated = bool(capped and len(ids) > capped)
+        ids = ids[:capped] if capped else ids
         nodes = sorted(self.store.get_nodes(ids), key=lambda n: n["uid"])   # get_nodes() is unordered
-        return {"intent": "FILTER", "filters": result.filters, "nodes": nodes,
-                "matched_ids": ids, "dropped_keys": dropped}
+        return {"intent": "FILTER", "filters": filt, "nodes": nodes,
+                "matched_ids": ids, "dropped_keys": dropped, "truncated": truncated}
 
     def _symbol_exists(self, symbol: str) -> bool:
         """Does a non-file node match ``symbol`` by name or uid? Backs the LLM router's hallucination

@@ -205,6 +205,28 @@ regression-tested (`test_p4_*`):
 Refuted: `locate()` grounding onto a file node while `_symbol_exists` excludes them — benign (LLM symbols are
 code identifiers, not file names).
 
+### Second round — re-review of the P4 fixes (2026-06-25)
+
+A re-review of the remediation (8 raised → 5 confirmed / 2 refuted) caught regressions the P4 fixes introduced —
+the codebase's recurring "every fix adds a regression" pattern. All fixed + regression-tested (`test_p4r_*`):
+
+- **P4R-1 (High):** the P4-2 finiteness guard called `math.isfinite(value)` on the *raw* `since` value, so a
+  huge-int (`10**400`, an LLM JSON literal) raised `OverflowError` straight out of `MemoryDB.ask` — re-introducing
+  the exact "never raise" violation P4-1 fixed (it escaped because `build_filter_query` was called outside
+  `_filter`'s try). Now `_to_epoch` converts to `float` inside `try/except (OverflowError, ValueError)` (drop on
+  overflow), and `_filter` wraps the builder call too.
+- **P4R-2 (Medium):** the P4-2 `datetime.fromisoformat` parse was interpreter-dependent — Z-suffix / basic-format /
+  week-date `since` strings parse on 3.11+ but raise on 3.10, giving different FILTER result sets per Python version
+  (CI runs 3.10/3.11/3.12). `_to_epoch` now parses with an explicit `strptime` format set (`_SINCE_FORMATS`) that
+  behaves identically on every interpreter, normalizing a trailing `Z` to `+00:00` first.
+- **P4R-3 (Low):** `frozen=True` blocks attribute reassignment but not mutation of the contained `filters` dict, so
+  a caller doing `out["filters"].clear()` corrupted the cached `IntentResult`. `_filter` now returns `dict(result.filters)`.
+- **P4R-4 (Low):** `limit=k` silently capped a "list-all" FILTER at `k` (default 5). `_filter` now fetches `k+1`,
+  sets a `truncated` flag, and slices to `k` — the cap is signalled, not silent.
+
+Refuted: planner-side `_symbol_exists` raising out of `retrieve()` (a trivial store lookup; "never raise" is the
+LLM-fallback contract, not DB errors); `max_cache=0` disabling the bound (a deliberate opt-out, default is 4096).
+
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)

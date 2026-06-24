@@ -341,8 +341,60 @@ def test_p4_filter_respects_k_limit():
         store.upsert_node(Node(uid=f"a.py::f{i}", type="function", name=f"f{i}", attrs={"lang": "go"}))
     store.commit()
     payload = _json("FILTER", filters={"lang": "go"}, confidence=0.95)
-    out = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload))).retrieve("go", k=3)
-    assert len(out["nodes"]) == 3                                    # capped at k
+    planner = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload)))
+    out = planner.retrieve("go", k=3)
+    assert len(out["nodes"]) == 3 and out["truncated"] is True       # capped at k, and the cap is signalled
+    out_all = planner.retrieve("go", k=50)
+    assert len(out_all["nodes"]) == 10 and out_all["truncated"] is False   # fits -> not truncated
+    store.close()
+
+
+# --- second-round (P4R) regressions ------------------------------------------
+
+def test_p4r_1_giant_int_since_does_not_raise():
+    """A huge-int `since` (an LLM can emit 10**400 as a JSON literal) overflowed float()/math.isfinite
+    and raised OverflowError out of ask() — the P4-2 finiteness guard was incomplete (P4R-1)."""
+    from memorydb.filters import _to_epoch
+    assert _to_epoch(10 ** 400) is None and _to_epoch(-(10 ** 400)) is None
+    sql, params, dropped = build_filter_query({"lang": "go", "since": 10 ** 400})
+    assert "since" in dropped and "since" not in params
+    # end-to-end: must not raise
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="a.go::F", type="function", name="F",
+                           attrs={"lang": "go", "file_uid": "a.go"}))
+    store.commit()
+    payload = _json("FILTER", filters={"lang": "go", "since": 10 ** 400}, confidence=0.9)
+    out = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload))).retrieve("q")
+    assert out["intent"] == "FILTER" and "since" in out["dropped_keys"]
+    store.close()
+
+
+def test_p4r_2_since_parsing_is_version_independent():
+    """`since` parsing must be identical on 3.10/3.11/3.12: Z-suffix and basic-format dates are parsed
+    the same everywhere (strptime, not fromisoformat whose grammar widened in 3.11 — P4R-2)."""
+    from memorydb.filters import _to_epoch
+    iso = _to_epoch("2026-06-15")
+    assert isinstance(iso, float)
+    assert _to_epoch("2026-06-15T00:00:00Z") == iso                 # Z-suffix UTC midnight == the date
+    assert _to_epoch("20260615") == iso                             # basic format, consistently accepted
+    assert _to_epoch("2026-06-15T00:00:00+00:00") == iso            # explicit offset
+    for bad in ("2026", "2026-W24", "1e9", "lastweek"):
+        assert _to_epoch(bad) is None, bad                          # rejected identically everywhere
+
+
+def test_p4r_3_filter_dict_copy_does_not_corrupt_cache():
+    """The returned FILTER `filters` dict must be a copy, so a caller mutating it can't corrupt the
+    cached IntentResult (frozen only blocks attribute reassignment, not container mutation — P4R-3)."""
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="a.go::F", type="function", name="F",
+                           attrs={"lang": "go", "file_uid": "a.go"}))
+    store.commit()
+    payload = _json("FILTER", filters={"lang": "go"}, confidence=0.95)
+    planner = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload)))
+    out1 = planner.retrieve("list go")
+    out1["filters"].clear()                                         # mutate the returned dict
+    out2 = planner.retrieve("list go")                             # identical query -> cache hit
+    assert out2["filters"] == {"lang": "go"}                        # cache NOT corrupted
     store.close()
 
 

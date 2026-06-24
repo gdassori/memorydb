@@ -27,20 +27,45 @@ _ALLOWED = {
 }
 
 
+# Explicit `since`-string grammar, parsed with strptime so it is IDENTICAL across interpreters.
+# datetime.fromisoformat widened its accepted forms in 3.11 (Z-suffix, basic format, week dates), which
+# would make the same string parse on 3.11+ but raise on 3.10 — a version-dependent FILTER result set
+# (re-review P4R-2). strptime behaves the same on 3.10/3.11/3.12; a trailing 'Z' is normalized first.
+_SINCE_FORMATS = (
+    "%Y-%m-%d", "%Y%m%d",
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z",
+)
+
+
 def _to_epoch(value) -> Optional[float]:
     """Coerce a ``since`` value to a float epoch matching the indexer's stored ``attrs.mtime``
-    (``os.path.getmtime`` → epoch seconds). A numeric *type* is taken as an epoch; a *string* is always
-    parsed as an ISO-8601 date/datetime (naive → UTC) — never as a bare epoch, so a year-only string
-    like ``"2026"`` is rejected rather than read as ``2026.0`` (~1970) and silently matching everything
-    (re-review P4-2). Returns ``None`` (→ predicate dropped) for anything non-finite or unparseable."""
+    (``os.path.getmtime`` → epoch seconds). A numeric *type* is taken as an epoch; a *string* is parsed
+    with an explicit, interpreter-independent date/datetime grammar — never as a bare epoch, so a
+    year-only string like ``"2026"`` is rejected rather than read as ``2026.0`` (~1970) and silently
+    matching everything (re-review P4-2). Returns ``None`` (→ predicate dropped) for a non-finite or
+    over-range number (an arbitrary-precision int can overflow ``float`` — re-review P4R-1) or anything
+    unparseable."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):           # a real epoch number
-        return float(value) if math.isfinite(value) else None
-    try:
-        dt = datetime.fromisoformat(str(value))   # strings are ISO dates/datetimes only
-    except (TypeError, ValueError):
-        return None
+        try:
+            f = float(value)                      # a huge int overflows float -> drop, do not raise
+        except (OverflowError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+    s = str(value).strip()
+    if s[-1:] in ("Z", "z"):                      # normalize the common LLM UTC suffix for %z
+        s = s[:-1] + "+00:00"
+    for fmt in _SINCE_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        return None                               # not a recognized date/datetime -> drop
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
