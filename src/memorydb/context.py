@@ -5,8 +5,11 @@ into **LLM-ready context within a token budget** — packing *relationships*, no
 payoff over classic RAG: the model sees structure with ``file:line`` provenance.
 
 Deterministic and tokenizer-agnostic: a ``TokenCounter`` port (default ``HeuristicCounter`` ≈ chars/4)
-lets a caller inject the model's real tokenizer. Dropped content is *reported* (``dropped``) and any
-in-card byte-cut is flagged (``truncated``), never silently lost.
+lets a caller inject the model's real tokenizer. Loss is signalled at two levels, never silently:
+*budget*-level loss (whole nodes/refs that did not fit, or a card byte-cut to fit the budget) is
+reported via ``dropped``/``truncated``; *field*-level display clipping (a single signature/docstring/
+qualname capped at ``_FIELD_CAP`` regardless of budget — a shaping/anti-spoofing bound, not a budget
+effect) is signalled in-band by a literal ``…`` and is intentionally distinct from ``truncated``.
 
 Source-derived text (signatures, docstrings, symbol names) comes from an *indexed repo*, which is
 attacker-controlled — it is sanitized before interpolation so it cannot spoof markdown structure
@@ -38,9 +41,11 @@ class HeuristicCounter:
 
 class ContextResult(BaseModel):
     """A token-budgeted, LLM-ready packing of a retrieval result. ``truncated``/``dropped`` make any
-    budget overflow explicit (``dropped`` = nodes/refs that did not fit; ``truncated`` = either some
-    were dropped *or* a single oversized card was byte-cut). ``used_tokens`` never exceeds
-    ``budget_tokens`` (which is itself clamped to ``>= 0``)."""
+    *budget*-level loss explicit (``dropped`` = nodes/refs that did not fit; ``truncated`` = either
+    some were dropped *or* a single oversized card was byte-cut to fit the budget). Per-field display
+    clipping (``…``, bounded by ``_FIELD_CAP`` independent of budget) is a separate, in-band signal and
+    deliberately does *not* set ``truncated``. ``used_tokens`` never exceeds ``budget_tokens`` (which is
+    itself clamped to ``>= 0``)."""
 
     text: str = ""
     cards: list = Field(default_factory=list)   # structured form, for non-markdown consumers
@@ -63,14 +68,20 @@ def _clip(text, cap: int = _FIELD_CAP) -> str:
     return (t[:cap] + "…") if len(t) > cap else t
 
 
+# Markdown block-structure markers escaped at line start: ATX header `#`, blockquote `>`, bullets
+# `*-+`, table `|`, setext `=`, and the fence/thematic-rule chars `~` (``~~~``) and `_` (``___``).
+_LEADING = "#>*-+|=~_"
+
+
 def _safe(text, cap: int = _FIELD_CAP) -> str:
     """Markdown-neutralize source-derived text before interpolation: clip (newline-collapse + cap),
     strip backticks (cannot open/close code fences or the signature backticks), and escape a leading
-    structural marker so it cannot masquerade as a header/quote/list/rule/table. LLM-only sink, but an
-    indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7)."""
+    structural marker so it cannot masquerade as a header/quote/list/rule/fence/table. LLM-only sink,
+    but an indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7; ~~~ fence + empty-string guard from
+    the re-review C4/C7/C9)."""
     t = _clip(text, cap).replace("`", "")
-    if t[:1] in "#>*-+|=":
-        t = "\\" + t
+    if t and t[:1] in _LEADING:    # `t and` — '' is a substring of every string; an empty field must
+        t = "\\" + t               # stay empty, not become a lone backslash (re-review C7/C9)
     return t
 
 
@@ -156,7 +167,11 @@ class ContextBuilder:
 
     def _card_md(self, node: dict, calls: list, called_by: list) -> str:
         attrs = node.get("attrs") or {}
-        parts = [f"### {_safe(node.get('name', ''), 120)}  ·  {node.get('type', '')}  ·  {_loc(node)}"]
+        # _loc()/file_uid and the uid prefix come from the (attacker-controlled) repo path too — a
+        # newline in a filename would forge a new header/fence/section, so sanitize it like the rest
+        # (re-review C2). type is ours (function/class/…) but _clip bounds it defensively.
+        parts = [f"### {_safe(node.get('name', ''), 120)}  ·  {_clip(node.get('type', ''), 40)}"
+                 f"  ·  {_safe(_loc(node), 200)}"]
         sig = _safe(attrs.get("signature") or "")
         if sig:
             parts.append(f"`{sig}`")
@@ -164,10 +179,12 @@ class ContextBuilder:
         if doc:
             parts.append(doc)
         rel = []
+        # clip-then-set-then-sort, matching _card_dict exactly so markdown and structured forms dedupe
+        # identically (re-review C6).
         if calls:
-            rel.append("→ calls: " + ", ".join(_clip(c, 80) for c in sorted(set(calls))))
+            rel.append("→ calls: " + ", ".join(sorted(set(_clip(c, 80) for c in calls))))
         if called_by:
-            rel.append("← called by: " + ", ".join(_clip(c, 80) for c in sorted(set(called_by))))
+            rel.append("← called by: " + ", ".join(sorted(set(_clip(c, 80) for c in called_by))))
         if rel:
             parts.append("   ".join(rel))
         return "\n".join(parts)
@@ -183,7 +200,7 @@ class ContextBuilder:
             "uid": uid,
             "name": _clip(node.get("name") or "", 120),
             "type": node.get("type"),
-            "file": attrs.get("file_uid") or (uid.split("::", 1)[0] if "::" in uid else uid),
+            "file": _clip(attrs.get("file_uid") or (uid.split("::", 1)[0] if "::" in uid else uid), 200),
             "line": attrs.get("start_line"),
             "signature": _clip(attrs.get("signature") or "", 512),
             "docstring": _clip(attrs.get("docstring") or "", 512),
@@ -234,24 +251,26 @@ class ContextBuilder:
         ceiling = int(budget * _SAFETY)
         header = f"**{sym}** — used at:"
         hcost = self.counter.count(header)
-        if hcost > ceiling:                       # header alone overflows -> cut it in, nothing else fits
-            header = header[: max(0, ceiling * 4)]
-            return ContextResult(text=header, uids=[],
-                                 used_tokens=(self.counter.count(header) if header else 0),
+        if hcost > ceiling:                       # header alone overflows the budget -> nothing fits
+            plain = sym[: max(0, ceiling * 4)]    # plain symbol, NO ** markup, to avoid an unbalanced
+            return ContextResult(text=plain, uids=[],    # mid-token fragment like '**authen' (C8)
+                                 used_tokens=(self.counter.count(plain) if plain else 0),
                                  budget_tokens=budget, dropped=len(refs), truncated=True,
                                  intent="LOCATE")
         used, lines, cards, uids, dropped = hcost, [header], [], [], 0
         for r in refs:
             name, relation = _safe(r.get("src_name") or "", 80), _safe(r.get("relation") or "", 40)
-            src_file = str(r.get("src_uid") or "").split("::", 1)[0]
-            line = f"- {name}  {relation}  (conf {r.get('confidence', 0):.2f})  {src_file}"
+            raw_file = str(r.get("src_uid") or "").split("::", 1)[0]
+            # the file part of src_uid is also repo-path-derived — a newline would forge an extra
+            # reference row, so sanitize it like name/relation (re-review C3; PR3-7 was incomplete).
+            line = f"- {name}  {relation}  (conf {r.get('confidence', 0):.2f})  {_safe(raw_file, 120)}"
             c = self.counter.count(line)
             if used + c > ceiling:
                 dropped += 1
                 continue
             lines.append(line)
             cards.append({"uid": r.get("src_uid"), "name": _clip(r.get("src_name") or "", 80),
-                          "relation": r.get("relation"), "file": src_file})
+                          "relation": r.get("relation"), "file": _clip(raw_file, 120)})
             uids.append(r.get("src_uid"))
             used += c
         if not refs:

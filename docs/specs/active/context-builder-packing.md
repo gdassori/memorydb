@@ -86,7 +86,12 @@ Followed by a **Relationships** section rendering the subgraph as edges
 
 ## Edge cases & failure modes
 
-- **Budget < one card:** emit the single highest-ranked card, truncated to budget, `dropped = n-1`.
+- **Budget < one card (but > 0):** emit the single highest-ranked card, byte-cut to fit the budget,
+  `dropped = n-1`, `truncated = True`.
+- **Budget too small to hold *anything*** (`card_budget <= 0`, e.g. `budget_tokens` 0/1): drop all nodes,
+  `dropped = n`, `truncated = True`, empty `text`. The `used_tokens <= budget_tokens` invariant takes
+  precedence over the "always emit one card" rule — you cannot emit a non-empty card within a 0-token
+  budget (re-review C10).
 - **Oversized subgraph:** `max_cards` hard cap; `dropped` reports the remainder (explicit, per the no-silent-truncation rule).
 - **Missing body/docstring:** render header + signature only.
 - **LOCATE result** (references, not nodes): a dedicated compact "used at" list rendering.

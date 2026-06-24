@@ -35,3 +35,23 @@ are remediated on `feat/context-builder-packing` with `test_pr3_*` regressions; 
   `test_pr3_3_markdown_injection_neutralized`, `test_pr3_4_cards_are_structured`, `test_pr3_7_locate_reference_line_sanitized`.
 - Invariant fuzz: budgets −10..599 × symbol lengths {1, 8, 80, 400}, EXPLAIN + LOCATE → **0 violations**.
 - Full suite: **136 passed**.
+
+## Second round — re-review of the fixes (2026-06-24)
+
+A follow-up mega review (9 lenses targeting *the fixes themselves* → 3 skeptics/finding, default-refuted +
+reachability-gated → 11 raised / 10 survived) caught regressions the PR3 fixes introduced — the codebase's
+recurring "each fix adds a regression" pattern. All fixed + regression-tested (`test_rr_*`); suite **143 green**;
+fuzz (budgets −5..399 × 9 markdown vectors, EXPLAIN+LOCATE) → **0 invariant violations, 0 injection escapes**.
+
+| ID | Sev | Summary | Status |
+|----|-----|---------|--------|
+| C2 | **High** | `_loc()`/`file_uid` reached the EXPLAIN card header **unsanitized** — a newline in a filename forges a header/fence/phantom-Relationships (PR3-3 missed the `_loc` path) | ✅ `_safe(_loc(node))` in the header |
+| C7/C9 | Low (regression) | `_safe("")` returned a lone `\` (`"" in "#>*-+\|="` is `True`) → every card with no docstring/signature (the common case) rendered a spurious `\` / `` `\` `` line | ✅ non-empty guard `if t and t[:1] in _LEADING` |
+| C3 | Medium | LOCATE `src_file` (src_uid prefix) interpolated unsanitized → newline forges a fake reference row (PR3-7 covered name/relation only) | ✅ `_safe(raw_file)` |
+| C4 | Medium | `_safe` didn't neutralize `~~~`/`___` fences/rules (only backticks stripped) | ✅ added `~ _` to `_LEADING` |
+| C6 | Nit | `cards[].calls` (clip-then-set) deduped differently from the rendered `→ calls:` (set-then-clip) | ✅ both clip-then-set-then-sort |
+| C8 | Nit | tiny-budget LOCATE header byte-cut left an unbalanced `**authen` fragment | ✅ emit the plain symbol, no `**` markup |
+| C10 | Nit (spec) | PR3-1's `card_budget<=0` drop-all contradicted spec line 89 ("emit one truncated card") | ✅ spec amended — invariant beats "always emit one card" |
+| C1 | Low/nuance | per-field `…` caps clip without setting `truncated` | ✅ documented two-tier loss (field `…` vs budget `dropped`/`truncated`); not conflated |
+
+Refuted: `node['type']` unsanitized (type is ours — function/class/…, not source-derived; 2/3 called it unreachable).
