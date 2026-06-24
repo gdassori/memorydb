@@ -23,7 +23,7 @@ and the `agentic spec` tooling).
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
 | [graph-aware-embedding-pipeline](active/graph-aware-embedding-pipeline.md) | Neighborhood serialization + `embed_dirty`-driven re-embedding | TD-006 | completed |
-| [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md) | `SqliteVecIndex` + `vec0` virtual table behind the `VectorIndex` interface | TD-004 | planned |
+| [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md) | `SqliteVecIndex` + `vec0` virtual table behind the `VectorIndex` interface | TD-004 | completed |
 
 ## 3. Retrieval & ranking
 

@@ -1,7 +1,8 @@
 ---
 title: "sqlite-vec acceleration (ANN index)"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-25
 author: claude
 related_tds: [TD-004]
 components: [vector, store, schema]
@@ -97,12 +98,37 @@ some recall. `rebuild_index` is O(n) and run rarely (dim/model change). Memory: 
 
 ## Tasks
 
-- [ ] extension load + capability check (`vec_version()`)
-- [ ] `vec_items` ensure migration (dim-parameterized, idempotent, extension-gated)
-- [ ] `SqliteVecIndex.search/upsert/remove/rebuild_index`
-- [ ] `make_vector_index` factory + `Store.set_embedding` sync hook
-- [ ] cosine distance→score mapping consistent with brute force
-- [ ] zero-dep fallback test + [vector]-extra KNN/recall tests
+- [x] extension load + capability check (`vec_version()`)
+- [x] `vec_items` lazy ensure (dim-parameterized, idempotent) — see notes (migration superseded by C3)
+- [x] `SqliteVecIndex.search/upsert/remove/rebuild_index`
+- [x] `make_vector_index` factory + `Store.set_embedding` sync hook
+- [x] cosine distance→score mapping consistent with brute force
+- [x] zero-dep fallback test + [vector]-extra KNN/recall tests
+
+## Implementation notes (2026-06-25)
+
+- **No migration — lazy dim-correct creation (C3).** `vec_items` is created on the **first `upsert`** at the
+  embedder's real dim (persisted in `meta['vec0_dim']`); migrations run before any embedding exists and can't
+  know the dim, so the spec's migration step is superseded. A dim/model change recreates the table at the new
+  dim (the authoritative BLOBs refill it on a full reembed); `rebuild_index()` is the explicit path.
+- **Cosine via L2-on-normalized (C6).** Vectors are unit-normalized (as in `BruteForceVectorIndex`), so vec0's
+  **default L2** distance `d` gives cosine `1 − d²/2` exactly — identical ranking and comparable scores across
+  backends, with **no** dependency on a cosine-metric build of sqlite-vec. Cross-backend agreement is tested.
+- **vec0 has no UPSERT.** `ON CONFLICT … DO UPDATE` raises `OperationalError: UPSERT not implemented for virtual
+  table`; `upsert` is **DELETE-then-INSERT**. `rebuild_index` uses a plain INSERT into the freshly recreated table.
+- **Delete sync via the search join.** `search` joins `vec_items → nodes`, so a deleted node's stale vec row
+  (embeddings cascade on node delete; vec0 has no FK) is **inert** at query time and reclaimed by `rebuild_index`
+  — the backstop against drift. `remove(node_id)` exists for explicit use.
+- **Sync hook.** `Store.attach_index(index)` registers the active index; `set_embedding` calls `index.upsert`
+  (guarded — a derived-index hiccup is logged, never breaks the authoritative BLOB write). A brute-force index
+  (no `upsert`) is ignored. The facade wires `attach_index` after `make_vector_index`.
+- **`types` filter** over-fetches `k×4` then filters in Python (keeps the vec0 `MATCH … AND k = ?` clause clean,
+  avoids type-filter starving k). The query-dim guard and `max(0, k)` mirror the brute-force backend.
+- **Fallback (C7).** `make_vector_index` returns `BruteForceVectorIndex` on `ImportError` (extra absent),
+  `AttributeError` (no `enable_load_extension`), or `OperationalError`/`DatabaseError` (load failed). Verified:
+  with sqlite-vec absent the full suite is green (186 passed, 7 ANN tests skipped); with it present, 193 green.
+- **CI** now installs the `[vector]` extra so the vec0 path is exercised on 3.10/3.11/3.12 (gated tests skip
+  cleanly if the extension can't load on a runner). Validated locally against **sqlite-vec 0.1.9**.
 
 ## Open questions
 

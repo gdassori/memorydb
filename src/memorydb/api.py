@@ -61,6 +61,7 @@ class MemoryDB:
         # The indexer does graph ingestion only; embedding is owned by refresh_embeddings() so it
         # happens in exactly one place (avoids a double pass — the spec's index() step 2).
         self._indexer = Indexer(store, self._extractors, embedder=None, ignore=IgnoreMatcher())
+        store.attach_index(vector_index)   # set_embedding keeps the (vec0) index in sync (sqlite-vec-acceleration)
         self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier)
         self._builder = ContextBuilder()
         self._closed = False

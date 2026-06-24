@@ -25,10 +25,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install (core pydantic + dev/pytest + code/tree-sitter extras)
+      - name: Install (core pydantic + dev/pytest + code/tree-sitter + vector/sqlite-vec extras)
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev,code]'
+          pip install -e '.[dev,code,vector]'
 
       - name: Show versions
         run: |
