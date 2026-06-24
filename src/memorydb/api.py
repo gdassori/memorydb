@@ -5,17 +5,15 @@ the planner together, so callers write ``db.index(path)`` / ``db.ask("…")`` in
 parts. This is *thin orchestration* over the existing pieces — it owns no new storage logic and never
 hides the ports: every default is overridable and ``store`` / ``planner`` stay reachable (TD-002).
 
-The context-packing here is a deliberate placeholder: a small token-budgeted serializer so ``context``
-/ ``ask(as_context=True)`` work end-to-end today. The dedicated ``context-builder-packing`` spec will
-supersede ``_pack_*`` with a richer ContextBuilder (kept behind the same ``ContextResult`` shape).
+``context`` / ``ask(as_context=True)`` delegate to the :class:`~memorydb.context.ContextBuilder`
+(context-builder-packing spec) for token-budgeted, relationship-aware packing.
 """
 from __future__ import annotations
 
 import warnings
 
-from pydantic import BaseModel, Field
-
 from . import query as Q
+from .context import ContextBuilder, ContextResult
 from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
 from .indexer import IgnoreMatcher, Indexer, IndexReport
@@ -47,25 +45,6 @@ class ExtractorRegistry:
         return extractors
 
 
-class ContextResult(BaseModel):
-    """A token-budgeted, LLM-ready packing of a retrieval result.
-
-    ``truncated`` is True when the budget cut off content. ``used_tokens`` is an estimate (≈4 chars/
-    token) over ``text``; it never exceeds ``budget_tokens``. Placeholder shape for the future
-    ContextBuilder (context-builder-packing spec)."""
-
-    text: str
-    uids: list = Field(default_factory=list)
-    used_tokens: int = 0
-    budget_tokens: int = 0
-    truncated: bool = False
-    intent: str = ""
-
-
-def _est_tokens(s: str) -> int:
-    """Cheap, model-agnostic token estimate (≈4 chars/token). Good enough to enforce a budget without
-    pulling in a tokenizer dependency; the ContextBuilder spec can swap in a real one."""
-    return max(1, (len(s) + 3) // 4)
 
 
 class MemoryDB:
@@ -83,6 +62,7 @@ class MemoryDB:
         # happens in exactly one place (avoids a double pass — the spec's index() step 2).
         self._indexer = Indexer(store, self._extractors, embedder=None, ignore=IgnoreMatcher())
         self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier)
+        self._builder = ContextBuilder()
         self._closed = False
 
     # --- construction ------------------------------------------------------
@@ -167,7 +147,7 @@ class MemoryDB:
         self._ensure_open()
         result = self._planner.retrieve(query, k=k, depth=depth)
         if as_context:
-            return self._pack_result(result, budget_tokens)
+            return self._builder.build(result, budget_tokens)
         return result
 
     def locate(self, symbol: str) -> list:
@@ -183,68 +163,10 @@ class MemoryDB:
 
     def context(self, query: str, *, k: int = 5, depth: int = 2,
                 budget_tokens: int = 2000) -> ContextResult:
-        """Packed EXPLAIN: the retrieved subgraph rendered into a token-budgeted, LLM-ready string."""
+        """Packed EXPLAIN: the retrieved subgraph rendered into a token-budgeted, LLM-ready context
+        (cards + a Relationships block, with file:line provenance) via the ContextBuilder."""
         self._ensure_open()
-        return self._pack_result(self.explain(query, k=k, depth=depth), budget_tokens)
-
-    # --- packing (placeholder for context-builder-packing) -----------------
-    def _pack_result(self, result: dict, budget_tokens: int) -> ContextResult:
-        intent = result.get("intent", "")
-        if intent == "LOCATE":
-            blocks = self._locate_blocks(result)
-        else:  # EXPLAIN (or anything subgraph-shaped); FILTER falls through to an empty pack
-            blocks = self._explain_blocks(result)
-        return self._pack_blocks(blocks, budget_tokens, intent)
-
-    def _explain_blocks(self, result: dict):
-        """One block per node, seeds first (best vector match), then the rest ordered by uid — the
-        churn-invariant key, not node id which the indexer renumbers on re-index (MR-17, matching the
-        eval ranker's R3L-4 fix)."""
-        nodes = {n["id"]: n for n in result.get("nodes", [])}
-        seeds = [s for s in result.get("seeds", []) if s in nodes]
-        seen = set(seeds)
-        rest = sorted((nid for nid in nodes if nid not in seen), key=lambda nid: nodes[nid]["uid"])
-        return [(nodes[nid]["uid"], self._render_node(nodes[nid])) for nid in seeds + rest]
-
-    @staticmethod
-    def _locate_blocks(result: dict):
-        sym = result.get("symbol") or "?"
-        blocks = [(r["src_uid"], f"{r['src_uid']}  --{r['relation']}-->  {sym}"
-                                  f"  (confidence {r['confidence']:.2f})")
-                  for r in result.get("references", [])]
-        return blocks or [("", f"No references to {sym!r}.")]
-
-    @staticmethod
-    def _render_node(node: dict) -> str:
-        attrs = node.get("attrs") or {}
-        path = attrs.get("file_uid") or node["uid"]
-        loc = f":{attrs['start_line']}" if attrs.get("start_line") else ""
-        head = f"## {node['name']}  ({node['type']}) — {path}{loc}"
-        parts = [head]
-        sig = (attrs.get("signature") or "").strip()
-        if sig:
-            parts.append(sig)
-        body = (node.get("body") or "").strip()
-        if body and body != sig:
-            parts.append(body)
-        return "\n".join(parts)
-
-    @staticmethod
-    def _pack_blocks(blocks, budget_tokens: int, intent: str) -> ContextResult:
-        kept, uids, used, truncated = [], [], 0, False
-        for uid, block in blocks:
-            cost = _est_tokens(block)
-            if used + cost > budget_tokens:
-                truncated = True
-                break
-            kept.append(block)
-            if uid:
-                uids.append(uid)
-            used += cost
-        return ContextResult(
-            text="\n\n".join(kept), uids=uids, used_tokens=used,
-            budget_tokens=budget_tokens, truncated=truncated, intent=intent,
-        )
+        return self._builder.build(self.explain(query, k=k, depth=depth), budget_tokens)
 
     # --- escape hatches & lifecycle ----------------------------------------
     @property

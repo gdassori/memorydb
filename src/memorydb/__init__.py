@@ -5,7 +5,8 @@ See docs/why-these-choices.md for the design and docs/decisions/ for the TDs.
 from __future__ import annotations
 
 from . import query
-from .api import ContextResult, ExtractorRegistry, MemoryDB
+from .api import ExtractorRegistry, MemoryDB
+from .context import ContextBuilder, ContextResult, HeuristicCounter
 from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
 from .indexer import IgnoreMatcher, Indexer, IndexReport
@@ -17,6 +18,8 @@ from .vector import BruteForceVectorIndex, SqliteVecIndex, make_vector_index, pa
 __all__ = [
     "MemoryDB",
     "ContextResult",
+    "ContextBuilder",
+    "HeuristicCounter",
     "ExtractorRegistry",
     "Store",
     "Node",

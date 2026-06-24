@@ -177,8 +177,10 @@ class _Extractor:
                     uid=uid, type=kind, name=child.name,
                     body=(ast.get_source_segment(self.text, child) or "")[:2000],
                     attrs={"lang": "python", "file_uid": self.rel,
-                           "signature": self._signature(child),
-                           "docstring": doc.splitlines()[0] if doc else "",
+                           # cap signature/docstring like body[:2000] — source is attacker-controlled,
+                           # an unbounded one-liner shouldn't blow up storage or the context payload (PR3-6)
+                           "signature": self._signature(child)[:512],
+                           "docstring": (doc.splitlines()[0] if doc else "")[:512],
                            "start_line": child.lineno,
                            "end_line": getattr(child, "end_lineno", child.lineno)},
                 ))

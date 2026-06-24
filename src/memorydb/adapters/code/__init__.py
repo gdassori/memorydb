@@ -147,8 +147,9 @@ class CodeAdapter:
             nodes.append(Node(
                 uid=u, type=kind, name=name, body=self._text(child, src)[:2000],
                 attrs={"lang": spec.name, "file_uid": rel,
-                       "signature": self._signature(child, src),
-                       "docstring": self._docstring(child, src, spec),
+                       # cap source-derived fields like body[:2000] (attacker-controlled repo, PR3-6)
+                       "signature": self._signature(child, src)[:512],
+                       "docstring": self._docstring(child, src, spec)[:512],
                        "start_line": child.start_point[0] + 1,
                        "end_line": child.end_point[0] + 1},
             ))
