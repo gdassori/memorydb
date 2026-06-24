@@ -55,3 +55,21 @@ fuzz (budgets −5..399 × 9 markdown vectors, EXPLAIN+LOCATE) → **0 invariant
 | C1 | Low/nuance | per-field `…` caps clip without setting `truncated` | ✅ documented two-tier loss (field `…` vs budget `dropped`/`truncated`); not conflated |
 
 Refuted: `node['type']` unsanitized (type is ours — function/class/…, not source-derived; 2/3 called it unreachable).
+
+## Third round — re-review of the round-2 fixes (2026-06-24)
+
+A third mega review (9 lenses over the C-round + run-aware `_safe` fixes → 3 reachability-gated skeptics) →
+**8 raised / 8 survived / 0 refuted**, 3 root causes (1 Medium, 2 Low). Verdict: *not converged* — and again one
+finding was a **regression of the previous round's own fix** (RR2-1). All fixed + regression-tested (`test_rr2_*`);
+suite **148 green**; fuzz (budgets −3..249 + 1000 + 5000 × 16 markdown vectors incl. `=`/`==`/`_ _ _`/`[ref]:`/`<`,
+EXPLAIN+LOCATE) → **0 invariant violations, 0 injection escapes**.
+
+| ID | Sev | Summary | Status |
+|----|-----|---------|--------|
+| RR2-1 | Medium (regression of 8ce22ea) | the run-aware rewrite dropped `=` from the single-char set, re-opening a **setext-H1** forge (a `=`/`==` docstring under the signature line renders `<h1>`); `===` stayed covered but 1–2-char runs were exposed | ✅ `=` back in `_LEAD1` (never a valid identifier start → no snake_case over-reach) |
+| RR2-2 | Low | the run check was contiguous-prefix-only → spaced rules `_ _ _`, link-ref `[ref]:`, leading `<` HTML passed through | ✅ `_safe` now also escapes spaced rules (line of only `-_*=+`/space, ≥3 markers), `[label]:` link-refs, and leading `<`. Ordered lists (`1.`) **deliberately not escaped** (benign + common in real docstrings; LLM-only sink) |
+| RR2-3 | Low | the C8 unbalanced-markup fix was applied to LOCATE only; the EXPLAIN single-card byte-cut sliced through a `` `signature` `` wrapper leaving a dangling backtick | ✅ drop the dangling backtick after the cut (count made even; `used ≤ budget` preserved) |
+
+`_safe` verified **idempotent** (`sym` is `_safe`-d then re-handled in the LOCATE fallback). Completeness-critic
+notes carried forward: the threat model is **LLM-only** (spec lines 14–16) — no strict-CommonMark renderer is in the
+loop, which is why the `<hr>`/`<ol>`/link-ref vectors are Low.

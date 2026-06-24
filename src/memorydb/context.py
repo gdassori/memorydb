@@ -17,6 +17,7 @@ attacker-controlled — it is sanitized before interpolation so it cannot spoof 
 """
 from __future__ import annotations
 
+import re
 from typing import Optional, Protocol
 
 from pydantic import BaseModel, Field
@@ -69,22 +70,31 @@ def _clip(text, cap: int = _FIELD_CAP) -> str:
 
 
 # Single chars that start a markdown block on their own: ATX header `#`, blockquote `>`, table `|`,
-# and the list/thematic-break markers `-*+`. A single leading `~`/`_`/`=` is NOT structure (e.g. the
-# very common Python `_private`/`__init__`); those only matter as a 3+ run (``~~~`` fence, ``___``/
-# ``===`` rule), handled separately so we don't mangle snake_case/dunder identifiers (re-review-2).
-_LEAD1 = "#>|-*+"
+# the list/thematic-break markers `-*+`, and setext-H1 underline `=` (a leading `=` is never a valid
+# identifier start, so escaping it is safe — re-review-2 RR2-1). A single leading `~`/`_` is NOT
+# structure (the very common Python `_private`/`__init__`); those matter only as a 3+ run.
+_LEAD1 = "#>|-*+="
 _LEAD_RUNS = ("~~~", "___", "===", "---", "***", "+++")
+_RULE_CHARS = set("-_*=+ ")                 # a line of ONLY these (>=3 markers) is a (possibly spaced) rule
+_LINKREF_RE = re.compile(r"\[[^\]]*\]:")    # `[label]: …` link-reference definition
 
 
 def _safe(text, cap: int = _FIELD_CAP) -> str:
     """Markdown-neutralize source-derived text before interpolation: clip (newline-collapse + cap),
     strip backticks (cannot open/close code fences or the signature backticks), and escape a leading
-    structural marker so it cannot masquerade as a header/quote/list/rule/fence/table. LLM-only sink,
-    but an indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7; ~~~/___ fences + empty-string guard
-    from re-review C4/C7/C9; run-aware so a single leading `_`/`~` is left alone — re-review-2)."""
+    structural marker so it cannot masquerade as a header/quote/list/rule/fence/HTML/link-ref/table.
+    LLM-only sink, but an indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7; ~~~/___ fences +
+    empty-string guard from re-review C4/C7/C9; setext `=`, spaced rules, link-ref and leading `<` from
+    re-review-2 RR2-1/RR2-2). Run-aware: a single leading `_`/`~` is left alone (snake_case/dunder).
+    Ordered lists (`1.`) are deliberately NOT escaped: a renumbered list is benign and escaping it would
+    mangle the very common numbered-docstring case (accepted trade-off, LLM-only sink)."""
     t = _clip(text, cap).replace("`", "")
-    if t and (t[:1] in _LEAD1 or t[:3] in _LEAD_RUNS):   # `t and` — '' is a substring of every string;
-        t = "\\" + t                                     # an empty field stays empty (re-review C7/C9)
+    if not t:                                            # '' is a substring of every string — an empty
+        return t                                         # field must stay empty, not become `\` (C7/C9)
+    if (t[:1] in _LEAD1 or t[:3] in _LEAD_RUNS or t[:1] == "<"     # block starter / fence-run / HTML
+            or _LINKREF_RE.match(t)                                # link-reference definition
+            or (set(t) <= _RULE_CHARS and sum(c != " " for c in t) >= 3)):   # spaced thematic rule `_ _ _`
+        t = "\\" + t
     return t
 
 
@@ -142,6 +152,9 @@ class ContextBuilder:
                     dropped += len(ordered)
                     break
                 card = card[: card_budget * 4]          # truncate the single oversized card *in*
+                if card.count("`") % 2:                  # the cut sliced through a `signature` wrapper —
+                    i = card.rfind("`")                  # drop the dangling unbalanced backtick so it
+                    card = card[:i] + card[i + 1:]       # can't open a stray code span (re-review-2 RR2-3)
                 cards_md.append(card)
                 card_dicts.append(self._card_dict(n, calls, called_by))
                 uids.append(n["uid"])

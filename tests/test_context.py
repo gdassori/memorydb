@@ -203,10 +203,10 @@ def test_rr_c3_locate_src_file_cannot_forge_row():
 
 
 def test_rr2_safe_run_aware_no_snakecase_overreach():
-    """A single leading '_'/'~'/'=' is NOT markdown structure — Python privates/dunders must pass
-    through unescaped; only 3+ runs (~~~ fence, ___/=== rule) and single-char block starters escape."""
+    """A single leading '_'/'~' is NOT markdown structure — Python privates/dunders must pass through
+    unescaped. (Leading '=' IS a setext-H1 underline and is escaped — see test_rr2_1.)"""
     from memorydb.context import _safe
-    for ok in ("_private helper", "__init__ sets up", "__name__", "_x", "~tilde", "=eq"):
+    for ok in ("_private helper", "__init__ sets up", "__name__", "_x", "~tilde"):
         assert _safe(ok) == ok, ok                                   # no spurious leading backslash
     for bad in ("~~~ fence", "___ rule", "=== rule", "### h", "> q", "- l", "* i", "| t |"):
         assert _safe(bad).startswith("\\"), bad                      # genuine structure still escaped
@@ -214,6 +214,48 @@ def test_rr2_safe_run_aware_no_snakecase_overreach():
     res = ContextBuilder().build({"intent": "EXPLAIN", "seeds": [1], "depths": {1: 0}, "edges": [],
         "nodes": [_node("a.py::f", docstring="__init__ initializes the thing")]}, 2000)
     assert "__init__ initializes the thing" in res.text and "\\__init__" not in res.text
+
+
+def test_rr2_1_setext_equals_escaped_no_h1():
+    """A leading '='/'==' is a setext-H1 underline — escaping it was dropped by the run-aware rewrite
+    (RR2-1 regression). A '=' docstring under the signature line must not forge an <h1>."""
+    from memorydb.context import _safe
+    for s in ("=", "==", "= title", "=== rule"):
+        assert _safe(s).startswith("\\"), s
+    res = ContextBuilder().build({"intent": "EXPLAIN", "seeds": [1], "depths": {1: 0}, "edges": [],
+        "nodes": [_node("m.py::imp", signature="def imp(x):", docstring="=")]}, 2000)
+    assert not any(ln.strip() == "=" for ln in res.text.split("\n"))   # no bare setext underline
+
+
+def test_rr2_2_spaced_rules_linkref_html_escaped_no_overreach():
+    """Spaced thematic breaks, link-ref definitions and leading HTML are neutralized; snake_case,
+    dunders and ordered lists (benign + common) are deliberately left alone (RR2-2)."""
+    from memorydb.context import _safe
+    for bad in ("_ _ _", "_ _ _ _ _", "- - -", "[ref]: http://x", "<div>", "<int> count"):
+        assert _safe(bad).startswith("\\"), bad
+    for ok in ("_private", "__init__", "__name__", "~tilde", "1. first step", "def f() -> int:"):
+        assert _safe(ok) == ok, ok                                    # no over-reach
+    res = ContextBuilder().build({"intent": "EXPLAIN", "seeds": [1], "depths": {1: 0}, "edges": [],
+        "nodes": [_node("a.py::f", docstring="_ _ _")]}, 2000)
+    assert not any(ln.strip() == "_ _ _" for ln in res.text.split("\n"))   # no forged <hr>
+
+
+def test_rr2_2_safe_idempotent():
+    """_safe must be idempotent — sym is _safe()'d then re-handled in the LOCATE fallback."""
+    from memorydb.context import _safe
+    for s in ("=", "_ _ _", "<div>", "### h", "_private", "", "normal text"):
+        assert _safe(_safe(s)) == _safe(s), s
+
+
+def test_rr2_3_explain_bytecut_balances_backticks():
+    """The EXPLAIN single-card byte-cut must not leave a dangling unbalanced backtick (C8 was applied
+    to LOCATE only — RR2-3). And used_tokens stays within budget."""
+    big = {"intent": "EXPLAIN", "seeds": [1], "depths": {1: 0}, "edges": [],
+           "nodes": [_node("a.py::f", signature="def f(" + "a" * 200 + ")")]}
+    for b in (40, 50, 60, 80, 120):
+        res = ContextBuilder().build(big, b)
+        assert res.text.count("`") % 2 == 0, (b, res.text)            # balanced backticks
+        assert res.used_tokens <= b
 
 
 def test_rr_c4_tilde_fence_neutralized():
