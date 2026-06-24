@@ -202,6 +202,20 @@ def test_rr_c3_locate_src_file_cannot_forge_row():
     assert len(rows) == 1 and "fake_caller" in rows[0]                # inlined into the one real row
 
 
+def test_rr2_safe_run_aware_no_snakecase_overreach():
+    """A single leading '_'/'~'/'=' is NOT markdown structure — Python privates/dunders must pass
+    through unescaped; only 3+ runs (~~~ fence, ___/=== rule) and single-char block starters escape."""
+    from memorydb.context import _safe
+    for ok in ("_private helper", "__init__ sets up", "__name__", "_x", "~tilde", "=eq"):
+        assert _safe(ok) == ok, ok                                   # no spurious leading backslash
+    for bad in ("~~~ fence", "___ rule", "=== rule", "### h", "> q", "- l", "* i", "| t |"):
+        assert _safe(bad).startswith("\\"), bad                      # genuine structure still escaped
+    # end-to-end: a dunder docstring renders clean (the common Python case)
+    res = ContextBuilder().build({"intent": "EXPLAIN", "seeds": [1], "depths": {1: 0}, "edges": [],
+        "nodes": [_node("a.py::f", docstring="__init__ initializes the thing")]}, 2000)
+    assert "__init__ initializes the thing" in res.text and "\\__init__" not in res.text
+
+
 def test_rr_c4_tilde_fence_neutralized():
     """A docstring opening a ~~~ fence must be neutralized so it cannot swallow following cards."""
     evil = {"intent": "EXPLAIN", "seeds": [1, 2], "depths": {1: 0, 2: 0}, "edges": [],

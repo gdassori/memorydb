@@ -68,20 +68,23 @@ def _clip(text, cap: int = _FIELD_CAP) -> str:
     return (t[:cap] + "…") if len(t) > cap else t
 
 
-# Markdown block-structure markers escaped at line start: ATX header `#`, blockquote `>`, bullets
-# `*-+`, table `|`, setext `=`, and the fence/thematic-rule chars `~` (``~~~``) and `_` (``___``).
-_LEADING = "#>*-+|=~_"
+# Single chars that start a markdown block on their own: ATX header `#`, blockquote `>`, table `|`,
+# and the list/thematic-break markers `-*+`. A single leading `~`/`_`/`=` is NOT structure (e.g. the
+# very common Python `_private`/`__init__`); those only matter as a 3+ run (``~~~`` fence, ``___``/
+# ``===`` rule), handled separately so we don't mangle snake_case/dunder identifiers (re-review-2).
+_LEAD1 = "#>|-*+"
+_LEAD_RUNS = ("~~~", "___", "===", "---", "***", "+++")
 
 
 def _safe(text, cap: int = _FIELD_CAP) -> str:
     """Markdown-neutralize source-derived text before interpolation: clip (newline-collapse + cap),
     strip backticks (cannot open/close code fences or the signature backticks), and escape a leading
     structural marker so it cannot masquerade as a header/quote/list/rule/fence/table. LLM-only sink,
-    but an indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7; ~~~ fence + empty-string guard from
-    the re-review C4/C7/C9)."""
+    but an indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7; ~~~/___ fences + empty-string guard
+    from re-review C4/C7/C9; run-aware so a single leading `_`/`~` is left alone — re-review-2)."""
     t = _clip(text, cap).replace("`", "")
-    if t and t[:1] in _LEADING:    # `t and` — '' is a substring of every string; an empty field must
-        t = "\\" + t               # stay empty, not become a lone backslash (re-review C7/C9)
+    if t and (t[:1] in _LEAD1 or t[:3] in _LEAD_RUNS):   # `t and` — '' is a substring of every string;
+        t = "\\" + t                                     # an empty field stays empty (re-review C7/C9)
     return t
 
 
