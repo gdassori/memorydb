@@ -1,7 +1,8 @@
 ---
 title: "LLM intent classifier & the FILTER path"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-25
 author: claude
 related_tds: [TD-007, TD-002]
 components: [planner, ports]
@@ -119,11 +120,34 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
 
 ## Tasks
 
-- [ ] `LLMClient` port + `IntentResult` schema + validation
-- [ ] `LLMIntentClassifier.analyze/classify` with cache + fallback chain
-- [ ] allowlisted FILTER→SQL builder (parameterized) + planner `_filter()`
-- [ ] symbol-existence guard + low-confidence→EXPLAIN
-- [ ] zero-dep tests (routing / parameterization / injection / fallback / hallucination)
+- [x] `LLMClient` port + `IntentResult` schema + validation
+- [x] `LLMIntentClassifier.analyze/classify` with cache + fallback chain
+- [x] allowlisted FILTER→SQL builder (parameterized) + planner `_filter()`
+- [x] symbol-existence guard + low-confidence→EXPLAIN
+- [x] zero-dep tests (routing / parameterization / injection / fallback / hallucination)
+
+## Implementation notes (2026-06-25)
+
+- **Pydantic, not dataclass.** `IntentResult` is a `pydantic.BaseModel` (TD-004); `confidence` is validated
+  to `[0, 1]` via `Field(ge=0, le=1)`, so an out-of-range model reply is a parse failure → regex fallback.
+- **`LLMClient` port** added to `ports.py` (`complete(system, user) -> str`); no provider imported (TD-002).
+- **Fallback chain.** `LLMIntentClassifier._analyze_uncached` wraps the call in a broad `except`: timeout,
+  empty/invalid JSON (`_extract_json` tolerates a ```` ```json ```` fence + surrounding prose), or schema/range
+  violation all return `IntentResult(intent=fallback.classify(query))`. It never raises to the caller.
+- **Symbol guard lives in the planner, injected as a callback.** The spec lists the hallucinated-symbol
+  downgrade as a classifier step, but verifying existence needs the store. To keep the classifier store-free
+  (TD-002) it takes a `symbol_exists: Callable[[str], bool]`; `RetrievalPlanner.__init__` auto-wires it to a
+  `nodes` lookup (name-or-uid, file nodes excluded) for any analyze-capable classifier that doesn't set one.
+  `analyze()` applies low-confidence→EXPLAIN and the symbol downgrade; results are cached by query string.
+- **LOCATE uid (C4).** An LLM-supplied `symbol` is tried as the *first* `locate()` candidate, so a uid resolves
+  to exactly one target and the ambiguity grouping collapses.
+- **mtime is epoch, not ISO (supersedes the C5 remediation).** The shipped indexer stamps `attrs.mtime` as an
+  epoch number (`os.path.getmtime`), so `filters.build_filter_query` coerces a `since` date/datetime to a float
+  epoch (UTC) and binds it — a numeric comparison against the stored value, **no re-index**. The value stays
+  bound (injection-safe). `since` uses an explicit `JOIN nodes f ON f.uid = n.file_uid AND f.type='file'`.
+- **FILTER builder** (`filters.py`) iterates a fixed allowlist (deterministic SQL/params), drops unknown/empty
+  keys (returned for logging), excludes file nodes, and orders by `uid`. The planner re-sorts the fetched nodes
+  by uid (`get_nodes` is unordered). Vector reranking of the FILTER set is deferred (deterministic order for v1).
 
 ## Open questions
 
@@ -146,6 +170,62 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
   (injection-safe).
 - **LOCATE uid (C4):** when the classifier returns a `symbol`, prefer resolving it to a **uid** and pass that to
   `references_to`, so the planner's ambiguity grouping collapses to a single target.
+
+## Review remediation (2026-06-25 — PR #4 mega review)
+
+An adversarial multi-agent review (27 raised → 24 confirmed / 1 refuted) found the headline SQL-injection claim
+holds (every value is bound and inert) but surfaced real correctness/robustness defects, now all fixed +
+regression-tested (`test_p4_*`):
+
+- **P4-1 (High):** a non-scalar FILTER value (an LLM can return `{"lang":["go","py"]}`) hit `sqlite3.execute`
+  and raised `ProgrammingError` out of `MemoryDB.ask` — breaking *never raise to the caller*. `build_filter_query`
+  now drops any non-`str/int/float` value (like an unknown key); `planner._filter` also wraps the execute and
+  degrades to the clean empty result on any DB error.
+- **P4-2 (Medium):** a bare-year/numeric `since` string (`"2026"`) was read by `float()` as epoch `2026.0` (~1970),
+  silently widening recency to *everything*. `_to_epoch` now treats a **numeric type** as an epoch and a **string**
+  as an ISO date only (bare year / `1e9` / 10-digit epoch strings are rejected → dropped); non-finite values dropped.
+- **P4-3 (Medium):** `since` used an INNER JOIN, so a symbol whose file had no stored `mtime` (indexer `OSError`)
+  or no `file_uid` silently vanished. Now a LEFT JOIN with the recency predicate deciding membership — `since`
+  returns only confirmed-recent symbols (unknown recency is **excluded by design**: a recency filter cannot vouch
+  for an unknown mtime), but the exclusion is explicit, not a join artifact.
+- **P4-4 (Medium):** `analyze()` cached the post-guard verdict, so a symbol indexed after a hallucination downgrade
+  kept returning stale EXPLAIN. Now only the store-independent half (LLM parse + confidence) is cached; the
+  symbol-existence downgrade runs **fresh** every call.
+- **P4-5 (Medium):** the planner mutated the injected classifier (`symbol_exists = self._symbol_exists`), so one
+  classifier shared by two planners checked the *first* planner's store. The planner no longer mutates the
+  classifier — it applies the hallucination guard directly against its own store in `retrieve()`.
+- **P4-6 (Low):** `path_glob` matched `n.uid` (which carries `::qualname`), so file-anchored globs (`*.py`,
+  `pkg/queue/*.py`) matched nothing. Now matches `n.file_uid` (the owning file path).
+- **P4-7 (Low):** a lowercase/mixed-case `intent` (`"locate"`) failed enum validation and discarded the whole
+  verdict to the regex fallback. The intent is now upper-cased before validation.
+- **Also:** the symbol-guard exception is swallowed (never raises); the default query cache is bounded
+  (oldest-evicted, `max_cache=4096`); `IntentResult` is `frozen` (a cached result can't be mutated); FILTER
+  respects the caller's `k`; standalone-classifier (no `symbol_exists`) hallucination caveat documented.
+
+Refuted: `locate()` grounding onto a file node while `_symbol_exists` excludes them — benign (LLM symbols are
+code identifiers, not file names).
+
+### Second round — re-review of the P4 fixes (2026-06-25)
+
+A re-review of the remediation (8 raised → 5 confirmed / 2 refuted) caught regressions the P4 fixes introduced —
+the codebase's recurring "every fix adds a regression" pattern. All fixed + regression-tested (`test_p4r_*`):
+
+- **P4R-1 (High):** the P4-2 finiteness guard called `math.isfinite(value)` on the *raw* `since` value, so a
+  huge-int (`10**400`, an LLM JSON literal) raised `OverflowError` straight out of `MemoryDB.ask` — re-introducing
+  the exact "never raise" violation P4-1 fixed (it escaped because `build_filter_query` was called outside
+  `_filter`'s try). Now `_to_epoch` converts to `float` inside `try/except (OverflowError, ValueError)` (drop on
+  overflow), and `_filter` wraps the builder call too.
+- **P4R-2 (Medium):** the P4-2 `datetime.fromisoformat` parse was interpreter-dependent — Z-suffix / basic-format /
+  week-date `since` strings parse on 3.11+ but raise on 3.10, giving different FILTER result sets per Python version
+  (CI runs 3.10/3.11/3.12). `_to_epoch` now parses with an explicit `strptime` format set (`_SINCE_FORMATS`) that
+  behaves identically on every interpreter, normalizing a trailing `Z` to `+00:00` first.
+- **P4R-3 (Low):** `frozen=True` blocks attribute reassignment but not mutation of the contained `filters` dict, so
+  a caller doing `out["filters"].clear()` corrupted the cached `IntentResult`. `_filter` now returns `dict(result.filters)`.
+- **P4R-4 (Low):** `limit=k` silently capped a "list-all" FILTER at `k` (default 5). `_filter` now fetches `k+1`,
+  sets a `truncated` flag, and slices to `k` — the cap is signalled, not silent.
+
+Refuted: planner-side `_symbol_exists` raising out of `retrieve()` (a trivial store lookup; "never raise" is the
+LLM-fallback contract, not DB errors); `max_cache=0` disabling the bound (a deliberate opt-out, default is 4096).
 
 ## References
 
