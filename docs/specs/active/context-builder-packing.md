@@ -38,12 +38,14 @@ class TokenCounter(Protocol):
 class HeuristicCounter:          # default, zero-dep: ~ len(text)/4
     def count(self, text) -> int: ...
 
-@dataclass
-class ContextResult:
+class ContextResult(BaseModel):  # pydantic (TD-004)
     text: str
-    cards: list[dict]            # structured form (for non-markdown consumers)
-    used_tokens: int
-    dropped: int                 # nodes that did not fit (reported, not hidden)
+    cards: list[dict]            # structured form (name/type/file/line/signature/calls…) for non-markdown consumers
+    uids: list[str]
+    used_tokens: int             # never exceeds budget_tokens (which is clamped >= 0)
+    budget_tokens: int
+    dropped: int                 # nodes/refs that did not fit (reported, not hidden)
+    truncated: bool              # some were dropped OR a single oversized card was byte-cut in
 
 class ContextBuilder:
     def __init__(self, counter: TokenCounter | None = None, max_cards: int = 100) -> None: ...
@@ -145,6 +147,35 @@ The `chars/4` heuristic **under-counts** punctuation-dense code, risking budget 
 (pack to `budget × 0.9`), expose the model's real tokenizer via the `TokenCounter` port, and always report
 `used_tokens` so an overrun is visible rather than silent. Provenance (`file:line`) is derived from the uid prefix +
 `attrs.start_line`, which the code adapter guarantees.
+
+## Review remediation (2026-06-24 — PR #3 mega review)
+
+An adversarial multi-agent review (25 candidates → 14 confirmed / 11 refuted, **no Highs**; full report in
+[adversarial-review-2026-06-24-pr3.md](../adversarial-review-2026-06-24-pr3.md)) found seven small, well-scoped
+defects in the new module — all now fixed + regression-tested (`test_pr3_*` in `tests/test_context.py`):
+
+- **PR3-1 (Medium, invariant):** `used_tokens` could exceed `budget_tokens` on degenerate budgets. LOCATE counted
+  its header unconditionally (overflow below header cost, unbounded with symbol length) and — unlike EXPLAIN —
+  skipped the `max(0, budget)` clamp. **Fix:** clamp *both* routes in `build()`; account the LOCATE header inside
+  the `budget×0.9` ceiling (truncate the header if it alone overflows); guard the EXPLAIN first-card branch on
+  `card_budget > 0`. Fuzzed −10..599 × 4 symbol lengths → 0 violations.
+- **PR3-2 (Medium, spec):** a single oversized card byte-cut *in* reported `truncated=False` (aliased to
+  `dropped>0`, which is 0 for n=1) — silent truncation. **Fix:** a `card_truncated` flag OR-ed into `truncated`.
+- **PR3-3 (Medium, security):** source-derived signature/docstring/name were interpolated into the markdown with
+  no escaping — an attacker-controlled indexed repo could spoof headers, fake `file:line` provenance, and inject
+  phantom Relationships into LLM-consumed context. **Fix:** `_safe()` — newline-collapse, backtick-strip, escape a
+  leading structural marker, length-cap. Applied to EXPLAIN cards and the LOCATE list (PR3-7).
+- **PR3-4 (Low):** `cards` was uid-only. **Fix:** populated with the structured fields (`name/type/file/line/
+  signature/docstring/calls/called_by`).
+- **PR3-5 (Low, perf):** the Relationships block sorted the full edge list even when the reserve held zero lines.
+  **Fix:** early-return before the sort; filter to included-included edges first.
+- **PR3-6 (Low, security):** signature/docstring were uncapped at extraction (body was `[:2000]`). **Fix:** `[:512]`
+  caps at extraction (both the Python resolver and the tree-sitter adapter) plus a render-time field cap.
+- **PR3-7 (Low, security):** the LOCATE reference line interpolated `src_name`/`relation` unescaped — folded into
+  the PR3-3 `_safe()` sanitization.
+
+The completeness critic's flagged "potential ZeroDivisionError on empty seeds" was a **false alarm** (the `1 - i/len(seeds)`
+division lives inside a comprehension that does not iterate when `seeds == []`) — verified.
 
 ## References
 

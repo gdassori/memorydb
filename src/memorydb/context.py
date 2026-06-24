@@ -5,8 +5,12 @@ into **LLM-ready context within a token budget** — packing *relationships*, no
 payoff over classic RAG: the model sees structure with ``file:line`` provenance.
 
 Deterministic and tokenizer-agnostic: a ``TokenCounter`` port (default ``HeuristicCounter`` ≈ chars/4)
-lets a caller inject the model's real tokenizer. Dropped content is *reported* (``dropped``), never
-silently truncated.
+lets a caller inject the model's real tokenizer. Dropped content is *reported* (``dropped``) and any
+in-card byte-cut is flagged (``truncated``), never silently lost.
+
+Source-derived text (signatures, docstrings, symbol names) comes from an *indexed repo*, which is
+attacker-controlled — it is sanitized before interpolation so it cannot spoof markdown structure
+(fake headers, fences, phantom Relationships) in the LLM-consumed context.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from pydantic import BaseModel, Field
 _W_SCORE, _W_DEPTH, _W_CONF = 0.5, 0.3, 0.2
 _RESERVE = 0.15   # fraction of the budget held back for the Relationships block
 _SAFETY = 0.9     # pack to budget*0.9 — the chars/4 heuristic under-counts punctuation-dense code (C)
+_FIELD_CAP = 240  # max rendered chars for a source-derived field (bounds the structure-spoof payload)
 
 
 class TokenCounter(Protocol):
@@ -33,7 +38,9 @@ class HeuristicCounter:
 
 class ContextResult(BaseModel):
     """A token-budgeted, LLM-ready packing of a retrieval result. ``truncated``/``dropped`` make any
-    budget overflow explicit; ``used_tokens`` never exceeds ``budget_tokens``."""
+    budget overflow explicit (``dropped`` = nodes/refs that did not fit; ``truncated`` = either some
+    were dropped *or* a single oversized card was byte-cut). ``used_tokens`` never exceeds
+    ``budget_tokens`` (which is itself clamped to ``>= 0``)."""
 
     text: str = ""
     cards: list = Field(default_factory=list)   # structured form, for non-markdown consumers
@@ -47,6 +54,24 @@ class ContextResult(BaseModel):
 
 def _qual(uid: str) -> str:
     return uid.split("::", 1)[1] if "::" in uid else uid
+
+
+def _clip(text, cap: int = _FIELD_CAP) -> str:
+    """Collapse newlines to spaces and cap length — bounds size and prevents a multi-line source
+    field from injecting extra logical rows. No markdown escaping (use ``_safe`` for that)."""
+    t = " ".join(str(text or "").splitlines()).strip()
+    return (t[:cap] + "…") if len(t) > cap else t
+
+
+def _safe(text, cap: int = _FIELD_CAP) -> str:
+    """Markdown-neutralize source-derived text before interpolation: clip (newline-collapse + cap),
+    strip backticks (cannot open/close code fences or the signature backticks), and escape a leading
+    structural marker so it cannot masquerade as a header/quote/list/rule/table. LLM-only sink, but an
+    indexed repo is attacker-controlled (PR3-3/PR3-6/PR3-7)."""
+    t = _clip(text, cap).replace("`", "")
+    if t[:1] in "#>*-+|=":
+        t = "\\" + t
+    return t
 
 
 def _loc(node: dict) -> str:
@@ -63,10 +88,11 @@ class ContextBuilder:
         self.max_cards = max_cards
 
     def build(self, result: dict, budget_tokens: int, fmt: str = "markdown") -> ContextResult:
+        budget = max(0, budget_tokens)   # clamp BOTH routes — negative budgets are degenerate (PR3-1)
         intent = result.get("intent", "")
         if intent == "LOCATE":
-            return self._build_locate(result, budget_tokens)
-        return self._build_explain(result, max(0, budget_tokens), intent or "EXPLAIN")
+            return self._build_locate(result, budget)
+        return self._build_explain(result, budget, intent or "EXPLAIN")
 
     # --- EXPLAIN ----------------------------------------------------------
     def _build_explain(self, result: dict, budget: int, intent: str) -> ContextResult:
@@ -92,49 +118,78 @@ class ContextBuilder:
         card_budget = effective - reserve
 
         rels_by = self._rel_index(result.get("edges", []))
-        cards, uids, used = [], [], 0
+        cards_md, card_dicts, uids, used, card_truncated = [], [], [], 0, False
         for n in ordered:
             calls, called_by = rels_by.get(n["uid"], ([], []))
             card = self._card_md(n, calls, called_by)
             cost = self.counter.count(card)
-            if used == 0 and cost > card_budget:        # first card alone overflows -> truncate it in
-                card = card[: max(1, card_budget * 4)]
-                cards.append(card); uids.append(n["uid"]); used += self.counter.count(card)
+            if used == 0 and cost > card_budget:        # first card alone overflows the card budget
+                if card_budget <= 0:                    # ...and nothing fits at all -> drop everything
+                    dropped += len(ordered)
+                    break
+                card = card[: card_budget * 4]          # truncate the single oversized card *in*
+                cards_md.append(card)
+                card_dicts.append(self._card_dict(n, calls, called_by))
+                uids.append(n["uid"])
+                used += self.counter.count(card)
+                card_truncated = True                   # report the byte-cut (PR3-2), not a clean fit
                 dropped += len(ordered) - 1
                 break
             if used + cost > card_budget:
                 dropped += 1
                 continue
-            cards.append(card); uids.append(n["uid"]); used += cost
+            cards_md.append(card)
+            card_dicts.append(self._card_dict(n, calls, called_by))
+            uids.append(n["uid"])
+            used += cost
 
         # Relationships block among the INCLUDED nodes, highest-confidence first, within the reserve.
         rel_lines, used = self._relationships(result.get("edges", []), set(uids), reserve, used,
                                               budget - used)
-        sections = list(cards)
+        sections = list(cards_md)
         if rel_lines:
             sections.append("**Relationships**\n" + "\n".join(rel_lines))
         text = "\n\n".join(sections)
-        return ContextResult(text=text, cards=[{"uid": u} for u in uids], uids=uids,
+        return ContextResult(text=text, cards=card_dicts, uids=uids,
                              used_tokens=used, budget_tokens=budget, dropped=dropped,
-                             truncated=dropped > 0, intent=intent)
+                             truncated=dropped > 0 or card_truncated, intent=intent)
 
     def _card_md(self, node: dict, calls: list, called_by: list) -> str:
         attrs = node.get("attrs") or {}
-        parts = [f"### {node['name']}  ·  {node['type']}  ·  {_loc(node)}"]
-        sig = (attrs.get("signature") or "").strip()
+        parts = [f"### {_safe(node.get('name', ''), 120)}  ·  {node.get('type', '')}  ·  {_loc(node)}"]
+        sig = _safe(attrs.get("signature") or "")
         if sig:
             parts.append(f"`{sig}`")
-        doc = (attrs.get("docstring") or "").strip()
+        doc = _safe(attrs.get("docstring") or "")
         if doc:
             parts.append(doc)
         rel = []
         if calls:
-            rel.append("→ calls: " + ", ".join(sorted(set(calls))))
+            rel.append("→ calls: " + ", ".join(_clip(c, 80) for c in sorted(set(calls))))
         if called_by:
-            rel.append("← called by: " + ", ".join(sorted(set(called_by))))
+            rel.append("← called by: " + ", ".join(_clip(c, 80) for c in sorted(set(called_by))))
         if rel:
             parts.append("   ".join(rel))
         return "\n".join(parts)
+
+    @staticmethod
+    def _card_dict(node: dict, calls: list, called_by: list) -> dict:
+        """Structured form for non-markdown consumers (PR3-4) — the same fields the card renders,
+        unparsed. Source-derived strings are length-clipped (not markdown-escaped: a JSON consumer
+        wants the raw-ish value, just bounded)."""
+        attrs = node.get("attrs") or {}
+        uid = node["uid"]
+        return {
+            "uid": uid,
+            "name": _clip(node.get("name") or "", 120),
+            "type": node.get("type"),
+            "file": attrs.get("file_uid") or (uid.split("::", 1)[0] if "::" in uid else uid),
+            "line": attrs.get("start_line"),
+            "signature": _clip(attrs.get("signature") or "", 512),
+            "docstring": _clip(attrs.get("docstring") or "", 512),
+            "calls": sorted(set(_clip(c, 80) for c in calls)),
+            "called_by": sorted(set(_clip(c, 80) for c in called_by)),
+        }
 
     @staticmethod
     def _edge_confidence(edges: list, nodes: list) -> dict:
@@ -158,13 +213,14 @@ class ContextBuilder:
         return out
 
     def _relationships(self, edges: list, included: set, reserve: int, used: int, hard_remaining: int):
-        lines: list = []
-        spent = 0
         cap = min(reserve, max(0, hard_remaining))
-        for e in sorted(edges, key=lambda x: (-x.get("confidence", 0.0), x["src"], x["dst"])):
-            if e["src"] not in included or e["dst"] not in included:
-                continue
-            line = f"{_qual(e['src'])} --{e['relation']}--> {_qual(e['dst'])}"
+        if cap <= 0:                              # no room for a single line -> skip the O(E log E) sort
+            return [], used
+        # Only edges with BOTH endpoints included can be emitted — filter before sorting (PR3-5).
+        incident = [e for e in edges if e["src"] in included and e["dst"] in included]
+        lines, spent = [], 0
+        for e in sorted(incident, key=lambda x: (-x.get("confidence", 0.0), x["src"], x["dst"])):
+            line = f"{_clip(_qual(e['src']), 80)} --{e['relation']}--> {_clip(_qual(e['dst']), 80)}"
             c = self.counter.count(line)
             if spent + c > cap:
                 break
@@ -173,21 +229,35 @@ class ContextBuilder:
 
     # --- LOCATE -----------------------------------------------------------
     def _build_locate(self, result: dict, budget: int) -> ContextResult:
-        sym = result.get("symbol") or "?"
+        sym = _safe(result.get("symbol") or "?", 80)
         refs = result.get("references", [])
+        ceiling = int(budget * _SAFETY)
         header = f"**{sym}** — used at:"
-        used = self.counter.count(header)
-        lines, uids, dropped = [header], [], 0
+        hcost = self.counter.count(header)
+        if hcost > ceiling:                       # header alone overflows -> cut it in, nothing else fits
+            header = header[: max(0, ceiling * 4)]
+            return ContextResult(text=header, uids=[],
+                                 used_tokens=(self.counter.count(header) if header else 0),
+                                 budget_tokens=budget, dropped=len(refs), truncated=True,
+                                 intent="LOCATE")
+        used, lines, cards, uids, dropped = hcost, [header], [], [], 0
         for r in refs:
-            line = (f"- {r['src_name']}  {r['relation']}  (conf {r.get('confidence', 0):.2f})  "
-                    f"{r['src_uid'].split('::', 1)[0]}")
+            name, relation = _safe(r.get("src_name") or "", 80), _safe(r.get("relation") or "", 40)
+            src_file = str(r.get("src_uid") or "").split("::", 1)[0]
+            line = f"- {name}  {relation}  (conf {r.get('confidence', 0):.2f})  {src_file}"
             c = self.counter.count(line)
-            if used + c > int(budget * _SAFETY):
+            if used + c > ceiling:
                 dropped += 1
                 continue
-            lines.append(line); uids.append(r["src_uid"]); used += c
+            lines.append(line)
+            cards.append({"uid": r.get("src_uid"), "name": _clip(r.get("src_name") or "", 80),
+                          "relation": r.get("relation"), "file": src_file})
+            uids.append(r.get("src_uid"))
+            used += c
         if not refs:
-            lines.append("(no references)")
-        return ContextResult(text="\n".join(lines), cards=[{"uid": u} for u in uids], uids=uids,
+            nr = "(no references)"
+            if used + self.counter.count(nr) <= ceiling:
+                lines.append(nr); used += self.counter.count(nr)
+        return ContextResult(text="\n".join(lines), cards=cards, uids=uids,
                              used_tokens=used, budget_tokens=budget, dropped=dropped,
                              truncated=dropped > 0, intent="LOCATE")
