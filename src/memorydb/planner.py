@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Callable, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import query as Q
 from .filters import build_filter_query
@@ -63,7 +63,12 @@ class IntentResult(BaseModel):
     """The LLM router's structured verdict: an :class:`Intent` plus the bits the planner routes on —
     a LOCATE ``symbol`` (name or uid), free-text ``entities`` (concept seeds), and a FILTER ``filters``
     dict (allowlisted in :mod:`memorydb.filters`). ``confidence`` is validated to ``[0, 1]`` so an
-    out-of-range model reply is treated as a parse failure and falls back to the regex classifier."""
+    out-of-range model reply is treated as a parse failure and falls back to the regex classifier.
+
+    Frozen so a cached result handed back from :meth:`LLMIntentClassifier.analyze` cannot be mutated by
+    a caller and silently corrupt the cache (re-review P4); downgrades use ``model_copy`` (P4)."""
+
+    model_config = ConfigDict(frozen=True)
 
     intent: Intent
     symbol: Optional[str] = None
@@ -93,8 +98,12 @@ class LLMIntentClassifier:
     :class:`IntentResult`; ``classify`` satisfies the :class:`~memorydb.ports.IntentClassifier` port.
 
     Two safety downgrades to EXPLAIN (the safe richer path): a low-confidence reply (``< 0.5``) and a
-    LOCATE whose ``symbol`` does not exist (``symbol_exists`` callback — the planner wires it to the
-    store, keeping this class store-free per TD-002). Results are cached by query string."""
+    LOCATE whose ``symbol`` does not exist. The store-independent half (LLM parse + confidence) is
+    cached by query string (bounded, oldest-evicted); the symbol-existence check runs **fresh** on each
+    ``analyze`` (so a symbol indexed later stops being downgraded) via an optional ``symbol_exists``
+    callback, keeping this class store-free (TD-002). When used standalone WITHOUT ``symbol_exists``,
+    the hallucination guard is disabled — :class:`RetrievalPlanner` applies it directly against its own
+    store instead, so it works through the facade regardless."""
 
     _SYSTEM = (
         "Classify a code-search query. Return ONLY JSON, no prose:\n"
@@ -113,34 +122,48 @@ class LLMIntentClassifier:
     )
 
     def __init__(self, client, fallback=None, cache=None,
-                 symbol_exists: Optional[Callable[[str], bool]] = None) -> None:
+                 symbol_exists: Optional[Callable[[str], bool]] = None, max_cache: int = 4096) -> None:
         self.client = client
         self.fallback = fallback or DefaultIntentClassifier()
         self.cache = {} if cache is None else cache
+        self._max_cache = max_cache if cache is None else None   # bound only the default cache (P4)
         self.symbol_exists = symbol_exists
 
     def classify(self, query: str) -> Intent:
         return self.analyze(query).intent
 
     def analyze(self, query: str) -> IntentResult:
+        # Cache only the store-INDEPENDENT verdict (LLM parse + confidence). The symbol-existence
+        # downgrade depends on graph state, so it is re-applied FRESH on every call — a symbol indexed
+        # after a hallucination downgrade must stop being downgraded (re-review P4-4).
         if query in self.cache:
-            return self.cache[query]
-        result = self._analyze_uncached(query)
-        self.cache[query] = result
+            result = self.cache[query]
+        else:
+            result = self._parse(query)
+            self.cache[query] = result
+            if self._max_cache and len(self.cache) > self._max_cache:
+                self.cache.pop(next(iter(self.cache)), None)     # evict oldest (insertion order)
+        if result.intent is Intent.LOCATE and result.symbol and self.symbol_exists is not None:
+            try:
+                if not self.symbol_exists(result.symbol):        # hallucinated symbol -> safe path
+                    result = result.model_copy(update={"intent": Intent.EXPLAIN})
+            except Exception as exc:                             # a guard failure must not raise (spec)
+                _LOG.debug("symbol_exists guard failed (%s); leaving intent unchanged", exc)
         return result
 
-    def _analyze_uncached(self, query: str) -> IntentResult:
+    def _parse(self, query: str) -> IntentResult:
+        """The cacheable, store-independent half: LLM call → JSON → validated IntentResult with the
+        low-confidence downgrade. Any failure (timeout, bad JSON, schema/range) → regex fallback."""
         try:
             data = _extract_json(self.client.complete(self._SYSTEM, query))
+            if isinstance(data.get("intent"), str):   # tolerate "locate"/"Filter" casing (P4-7)
+                data["intent"] = data["intent"].strip().upper()
             result = IntentResult(**data)
         except Exception as exc:                  # any failure -> regex fallback, never raise (spec)
             _LOG.debug("LLM intent classify failed (%s); using regex fallback", exc)
             return IntentResult(intent=self.fallback.classify(query))
         if result.confidence < 0.5:               # ambiguous -> safe richer path
             result = result.model_copy(update={"intent": Intent.EXPLAIN})
-        if (result.intent is Intent.LOCATE and result.symbol
-                and self.symbol_exists is not None and not self.symbol_exists(result.symbol)):
-            result = result.model_copy(update={"intent": Intent.EXPLAIN})   # hallucinated symbol
         return result
 
 
@@ -150,10 +173,6 @@ class RetrievalPlanner:
         self.embedder = embedder
         self.index = index or BruteForceVectorIndex(store)
         self.classifier = classifier or DefaultIntentClassifier()
-        # Wire the LLM router's hallucination guard to the store without making the classifier import
-        # it (TD-002): any analyze-capable classifier with no symbol_exists set gets the store check.
-        if getattr(self.classifier, "analyze", None) and getattr(self.classifier, "symbol_exists", True) is None:
-            self.classifier.symbol_exists = self._symbol_exists
 
     def retrieve(self, query: str, k: int = 5, depth: int = 2) -> dict:
         # A rich classifier (LLM router) exposes analyze() -> IntentResult with symbol/filters; the
@@ -161,6 +180,10 @@ class RetrievalPlanner:
         if callable(getattr(self.classifier, "analyze", None)):
             result = self.classifier.analyze(query)
             if result.intent is Intent.LOCATE:
+                # Apply the hallucination guard HERE against this planner's own store (fresh, no shared
+                # mutation): one classifier may serve several planners with different stores (P4-5).
+                if result.symbol and not self._symbol_exists(result.symbol):
+                    return self.explain(query, k=k, depth=depth)
                 return self.locate(query, symbol=result.symbol)
             if result.intent is Intent.FILTER:
                 return self._filter(result, k=k)
@@ -224,14 +247,20 @@ class RetrievalPlanner:
 
     def _filter(self, result: "IntentResult", k: int = 5) -> dict:
         """FILTER: an allowlisted, parameterized SQL query over symbol attributes (no injection — every
-        value is bound). Returns the matched nodes (file nodes excluded), in deterministic uid order."""
-        sql, params, dropped = build_filter_query(result.filters, limit=None)
+        value is bound). Returns the matched nodes (file nodes excluded), in deterministic uid order,
+        capped at ``k`` (the caller's result-size knob, like LOCATE/EXPLAIN)."""
+        sql, params, dropped = build_filter_query(result.filters, limit=k)
         if dropped:
-            _LOG.debug("FILTER dropped unsupported/empty keys: %s", dropped)
+            _LOG.debug("FILTER dropped unsupported/empty/non-scalar keys: %s", dropped)
         if sql is None:                           # nothing usable -> clean empty result (spec)
             return {"intent": "FILTER", "filters": result.filters, "nodes": [], "matched_ids": [],
                     "dropped_keys": dropped, "note": "no usable filter predicate"}
-        ids = [r[0] for r in self.store.conn.execute(sql, params).fetchall()]
+        try:
+            ids = [r[0] for r in self.store.conn.execute(sql, params).fetchall()]
+        except Exception as exc:                  # a DB error must not raise to the caller (spec)
+            _LOG.debug("FILTER query failed (%s); returning empty result", exc)
+            return {"intent": "FILTER", "filters": result.filters, "nodes": [], "matched_ids": [],
+                    "dropped_keys": dropped, "note": "filter query error"}
         nodes = sorted(self.store.get_nodes(ids), key=lambda n: n["uid"])   # get_nodes() is unordered
         return {"intent": "FILTER", "filters": result.filters, "nodes": nodes,
                 "matched_ids": ids, "dropped_keys": dropped}

@@ -195,6 +195,157 @@ def test_planner_wires_symbol_guard_to_store():
     store.close()
 
 
+# --- mega-review (P4) regressions --------------------------------------------
+
+def _emb():
+    class _E:
+        dim = 8
+        def embed(self, texts):
+            return [[0.0] * self.dim for _ in texts]
+    return _E()
+
+
+def test_p4_1_non_scalar_filter_value_dropped_not_crash():
+    """A list/dict FILTER value (an LLM can return one) must be dropped like an unknown key — binding
+    it would raise sqlite3.ProgrammingError out of the public API (violating 'never raise')."""
+    sql, params, dropped = build_filter_query({"lang": ["go", "py"], "type": {"x": 1}, "path_glob": "p/*"})
+    assert "lang" in dropped and "type" in dropped               # non-scalars dropped
+    assert params == {"path_glob": "p/*"} and ":lang" not in (sql or "")
+    # end-to-end: a FILTER reply with a list value must not raise
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="p/x.go::F", type="function", name="F",
+                           attrs={"lang": "go", "file_uid": "p/x.go"}))
+    store.commit()
+    payload = _json("FILTER", filters={"lang": ["go", "python"]}, confidence=0.9)
+    out = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload))).retrieve("q")
+    assert out["intent"] == "FILTER" and out["dropped_keys"] == ["lang"]   # no crash, key dropped
+    store.close()
+
+
+def test_p4_2_bare_year_since_is_rejected_not_epoch():
+    """A bare-year/numeric string `since` ("2026") must NOT be read as epoch 2026.0 (~1970) which would
+    match everything; strings are parsed as ISO dates only."""
+    # bare year / float-notation / 10-digit epoch string: none are valid ISO dates -> dropped, NOT read
+    # as a ~1970 epoch (across 3.10/3.11/3.12). ("20260615" IS valid ISO basic-format in 3.11+, so it is
+    # deliberately not here — parsing it as 2026-06-15 is correct.)
+    for bad in ("2026", "1e9", "1700000000", "lastweek"):
+        sql, params, dropped = build_filter_query({"lang": "go", "since": bad})
+        assert "since" in dropped and "since" not in params, bad
+    # a proper ISO date is accepted as a float epoch
+    sql, params, _ = build_filter_query({"since": "2026-06-15"})
+    assert isinstance(params["since"], float)
+    # a real numeric epoch (int/float type, not string) is accepted
+    _, params2, _ = build_filter_query({"since": 1_700_000_000})
+    assert params2["since"] == 1_700_000_000.0
+
+
+def test_p4_2_nan_inf_since_dropped():
+    for bad in (float("nan"), float("inf")):
+        _, params, dropped = build_filter_query({"lang": "go", "since": bad})
+        assert "since" in dropped and "since" not in params
+
+
+def test_p4_3_since_excludes_unknown_mtime_without_dropping_others():
+    store = Store(":memory:")
+    # file with a known recent mtime + its symbol; and a file with mtime=None + its symbol
+    store.upsert_node(Node(uid="recent.go", type="file", name="recent.go",
+                           attrs={"lang": "go", "mtime": 1_800_000_000.0}))
+    store.upsert_node(Node(uid="recent.go::A", type="function", name="A",
+                           attrs={"lang": "go", "file_uid": "recent.go"}))
+    store.upsert_node(Node(uid="nomtime.go", type="file", name="nomtime.go",
+                           attrs={"lang": "go", "mtime": None}))
+    store.upsert_node(Node(uid="nomtime.go::B", type="function", name="B",
+                           attrs={"lang": "go", "file_uid": "nomtime.go"}))
+    store.commit()
+    # lang-only: both functions
+    sql, params, _ = build_filter_query({"lang": "go"})
+    assert {store.get_nodes([r[0] for r in store.conn.execute(sql, params)])[i]["name"]
+            for i in (0, 1)} == {"A", "B"}
+    # lang + since: only A (known recent mtime); B (unknown mtime) excluded, NOT a crash
+    sql, params, _ = build_filter_query({"lang": "go", "since": "2020-01-01"})
+    ids = [r[0] for r in store.conn.execute(sql, params).fetchall()]
+    assert [n["name"] for n in store.get_nodes(ids)] == ["A"]
+    store.close()
+
+
+def test_p4_4_symbol_guard_is_fresh_not_stale_across_index():
+    store = Store(":memory:")
+    store.commit()
+    planner = RetrievalPlanner(store, _emb(),
+                               classifier=LLMIntentClassifier(FakeLLM(_json("LOCATE", symbol="Gamma", confidence=0.99))))
+    assert planner.retrieve("where is Gamma used?")["intent"] == "EXPLAIN"   # absent -> downgraded
+    store.upsert_node(Node(uid="g.py::Gamma", type="function", name="Gamma", attrs={"lang": "python"}))
+    store.commit()
+    assert planner.retrieve("where is Gamma used?")["intent"] == "LOCATE"    # now present -> fresh LOCATE
+    store.close()
+
+
+def test_p4_5_shared_classifier_two_planners_own_stores():
+    storeA, storeB = Store(":memory:"), Store(":memory:")
+    storeA.upsert_node(Node(uid="a.py::Beta", type="function", name="Beta", attrs={"lang": "python"}))
+    storeA.commit(); storeB.commit()
+    shared = LLMIntentClassifier(FakeLLM(_json("LOCATE", symbol="Beta", confidence=0.99)))
+    pA = RetrievalPlanner(storeA, _emb(), classifier=shared)
+    pB = RetrievalPlanner(storeB, _emb(), classifier=shared)
+    assert pA.retrieve("where is Beta used?")["intent"] == "LOCATE"    # Beta in storeA
+    assert pB.retrieve("where is Beta used?")["intent"] == "EXPLAIN"   # Beta absent in storeB
+    assert shared.symbol_exists is None                               # injected classifier not mutated
+    storeA.close(); storeB.close()
+
+
+def test_p4_6_path_glob_matches_file_path_not_uid():
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="pkg/queue/foo.py::handle", type="function", name="handle",
+                           attrs={"lang": "python", "file_uid": "pkg/queue/foo.py"}))
+    store.commit()
+    for glob in ("pkg/queue/*.py", "pkg/queue/foo.py", "*.py", "pkg/queue/*"):
+        sql, params, _ = build_filter_query({"path_glob": glob})
+        ids = [r[0] for r in store.conn.execute(sql, params).fetchall()]
+        assert [n["name"] for n in store.get_nodes(ids)] == ["handle"], glob   # file-anchored globs work
+    store.close()
+
+
+def test_p4_7_lowercase_intent_normalized():
+    c = LLMIntentClassifier(FakeLLM(_json("locate", symbol="Foo", confidence=0.96)))
+    r = c.analyze("where is Foo used?")
+    assert r.intent is Intent.LOCATE and r.symbol == "Foo"           # not discarded to regex fallback
+    c2 = LLMIntentClassifier(FakeLLM(_json("Filter", filters={"lang": "go"}, confidence=0.9)))
+    assert c2.analyze("q").intent is Intent.FILTER
+
+
+def test_p4_intent_result_frozen():
+    import pytest
+    r = IntentResult(intent=Intent.LOCATE)
+    with pytest.raises(Exception):
+        r.intent = Intent.EXPLAIN                                    # frozen -> cannot mutate a cached result
+
+
+def test_p4_cache_is_bounded():
+    fake = FakeLLM(_json("EXPLAIN", confidence=0.9))
+    c = LLMIntentClassifier(fake, max_cache=10)
+    for i in range(25):
+        c.analyze(f"query {i}")
+    assert len(c.cache) <= 10                                        # evicts oldest, no unbounded growth
+
+
+def test_p4_symbol_exists_exception_does_not_raise():
+    def boom(_s):
+        raise RuntimeError("store exploded")
+    c = LLMIntentClassifier(FakeLLM(_json("LOCATE", symbol="Foo", confidence=0.99)), symbol_exists=boom)
+    assert c.analyze("where is Foo used?").intent is Intent.LOCATE   # guard error swallowed, never raises
+
+
+def test_p4_filter_respects_k_limit():
+    store = Store(":memory:")
+    for i in range(10):
+        store.upsert_node(Node(uid=f"a.py::f{i}", type="function", name=f"f{i}", attrs={"lang": "go"}))
+    store.commit()
+    payload = _json("FILTER", filters={"lang": "go"}, confidence=0.95)
+    out = RetrievalPlanner(store, _emb(), classifier=LLMIntentClassifier(FakeLLM(payload))).retrieve("go", k=3)
+    assert len(out["nodes"]) == 3                                    # capped at k
+    store.close()
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

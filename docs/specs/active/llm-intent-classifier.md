@@ -171,6 +171,40 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
 - **LOCATE uid (C4):** when the classifier returns a `symbol`, prefer resolving it to a **uid** and pass that to
   `references_to`, so the planner's ambiguity grouping collapses to a single target.
 
+## Review remediation (2026-06-25 — PR #4 mega review)
+
+An adversarial multi-agent review (27 raised → 24 confirmed / 1 refuted) found the headline SQL-injection claim
+holds (every value is bound and inert) but surfaced real correctness/robustness defects, now all fixed +
+regression-tested (`test_p4_*`):
+
+- **P4-1 (High):** a non-scalar FILTER value (an LLM can return `{"lang":["go","py"]}`) hit `sqlite3.execute`
+  and raised `ProgrammingError` out of `MemoryDB.ask` — breaking *never raise to the caller*. `build_filter_query`
+  now drops any non-`str/int/float` value (like an unknown key); `planner._filter` also wraps the execute and
+  degrades to the clean empty result on any DB error.
+- **P4-2 (Medium):** a bare-year/numeric `since` string (`"2026"`) was read by `float()` as epoch `2026.0` (~1970),
+  silently widening recency to *everything*. `_to_epoch` now treats a **numeric type** as an epoch and a **string**
+  as an ISO date only (bare year / `1e9` / 10-digit epoch strings are rejected → dropped); non-finite values dropped.
+- **P4-3 (Medium):** `since` used an INNER JOIN, so a symbol whose file had no stored `mtime` (indexer `OSError`)
+  or no `file_uid` silently vanished. Now a LEFT JOIN with the recency predicate deciding membership — `since`
+  returns only confirmed-recent symbols (unknown recency is **excluded by design**: a recency filter cannot vouch
+  for an unknown mtime), but the exclusion is explicit, not a join artifact.
+- **P4-4 (Medium):** `analyze()` cached the post-guard verdict, so a symbol indexed after a hallucination downgrade
+  kept returning stale EXPLAIN. Now only the store-independent half (LLM parse + confidence) is cached; the
+  symbol-existence downgrade runs **fresh** every call.
+- **P4-5 (Medium):** the planner mutated the injected classifier (`symbol_exists = self._symbol_exists`), so one
+  classifier shared by two planners checked the *first* planner's store. The planner no longer mutates the
+  classifier — it applies the hallucination guard directly against its own store in `retrieve()`.
+- **P4-6 (Low):** `path_glob` matched `n.uid` (which carries `::qualname`), so file-anchored globs (`*.py`,
+  `pkg/queue/*.py`) matched nothing. Now matches `n.file_uid` (the owning file path).
+- **P4-7 (Low):** a lowercase/mixed-case `intent` (`"locate"`) failed enum validation and discarded the whole
+  verdict to the regex fallback. The intent is now upper-cased before validation.
+- **Also:** the symbol-guard exception is swallowed (never raises); the default query cache is bounded
+  (oldest-evicted, `max_cache=4096`); `IntentResult` is `frozen` (a cached result can't be mutated); FILTER
+  respects the caller's `k`; standalone-classifier (no `symbol_exists`) hallucination caveat documented.
+
+Refuted: `locate()` grounding onto a file node while `_symbol_exists` excludes them — benign (LLM symbols are
+code identifiers, not file names).
+
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)
