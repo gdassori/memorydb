@@ -218,18 +218,14 @@ def test_mr13_escaping_relative_import_no_edge():
 
 # --- Batch 4: MR-17/18/19/20 ----------------------------------------------------------------
 def test_mr17_context_blocks_ordered_by_uid():
-    import warnings
-    from memorydb import MemoryDB
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        db = MemoryDB.open(":memory:", extractors=[])
+    from memorydb import ContextBuilder
+    # equal-rank nodes (no seeds/depths/edges) tie-break by uid (churn-invariant), not node id
     result = {"intent": "EXPLAIN", "seeds": [], "nodes": [
         {"id": 1, "uid": "z::c", "type": "function", "name": "c", "attrs": {}},
         {"id": 2, "uid": "a::a", "type": "function", "name": "a", "attrs": {}},
         {"id": 3, "uid": "m::b", "type": "function", "name": "b", "attrs": {}}]}
-    uids = [u for u, _ in db._explain_blocks(result)]
-    assert uids == ["a::a", "m::b", "z::c"]          # by uid, not by id order (z::c, a::a, m::b)
-    db.close()
+    res = ContextBuilder().build(result, budget_tokens=10000)
+    assert res.uids == ["a::a", "m::b", "z::c"]       # by uid, not by id order (z::c, a::a, m::b)
 
 
 def test_mr18_migration3_is_idempotent():

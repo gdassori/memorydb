@@ -108,6 +108,7 @@ class RetrievalPlanner:
         return {
             "intent": "EXPLAIN",
             "seeds": seeds,
+            "depths": {r["id"]: r["depth"] for r in reached},   # for the context builder's ranking
             "nodes": self.store.get_nodes(ids),
             "edges": Q.subgraph_edges(self.store, ids),
         }

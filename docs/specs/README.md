@@ -32,7 +32,7 @@ and the `agentic spec` tooling).
 | [llm-intent-classifier](active/llm-intent-classifier.md) | Pluggable LLM router + `FILTER` path + entity extraction | TD-007 | planned |
 | [graph-algorithms-networkx](active/graph-algorithms-networkx.md) | On-demand subgraph → PageRank/centrality scoring | TD-003 | planned |
 | [hybrid-ranker](active/hybrid-ranker.md) | Fuse vector score + centrality + confidence + recency into one ranking | TD-006, TD-007 | planned |
-| [context-builder-packing](active/context-builder-packing.md) | Subgraph → token-budgeted, LLM-ready context | TD-007 | planned |
+| [context-builder-packing](active/context-builder-packing.md) | Subgraph → token-budgeted, LLM-ready context | TD-007 | completed |
 
 ## 4. API & tooling
 

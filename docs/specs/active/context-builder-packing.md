@@ -1,7 +1,8 @@
 ---
 title: "Context builder & token-budgeted packing"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-23
 author: claude
 related_tds: [TD-007, TD-006]
 components: [planner, query]
@@ -106,12 +107,27 @@ op; the heuristic is O(len). Real tokenizers are pluggable when exactness matter
 
 ## Tasks
 
-- [ ] `TokenCounter` port + `HeuristicCounter`
-- [ ] node ranking (score+depth+confidence) with deterministic tie-break
-- [ ] greedy packer with reserved relationships budget + `dropped` accounting
-- [ ] markdown + structured-dict renderers with `file:line` provenance
-- [ ] LOCATE "used at" rendering
-- [ ] zero-dep tests (budget / ordering / provenance / determinism / dropped)
+- [x] `TokenCounter` port + `HeuristicCounter`
+- [x] node ranking (score+depth+confidence) with deterministic tie-break
+- [x] greedy packer with reserved relationships budget + `dropped` accounting
+- [x] markdown + structured-dict renderers with `file:line` provenance
+- [x] LOCATE "used at" rendering
+- [x] zero-dep tests (budget / ordering / provenance / determinism / dropped)
+
+## Implementation notes (2026-06-23)
+
+- `src/memorydb/context.py` — `ContextBuilder`, `HeuristicCounter` (≈chars/4), `TokenCounter` port,
+  `ContextResult` (pydantic: text, cards, uids, used_tokens, budget_tokens, dropped, truncated, intent).
+- **Ranking** uses the documented `0.5·vector + 0.3·1/(1+depth) + 0.2·edge_confidence`; the vector term
+  is the seed-rank proxy (`1 - i/len(seeds)`) since the result carries ranked seeds, and `depth` comes
+  from a new `result["depths"]` map (planner.explain now emits it). Tie-break by uid (churn-invariant).
+- **Packing** is greedy under a `budget × 0.9` safety margin (the heuristic under-counts code), with a
+  15% reserve for the **Relationships** block (highest-confidence edges among the *included* nodes).
+  `dropped`/`truncated` make any overflow explicit (no silent truncation).
+- **Facade integration:** replaced the placeholder `_pack_*` in `api.py` — `MemoryDB.context()` and
+  `ask(as_context=True)` now delegate to a `ContextBuilder`; `ContextResult` is re-exported.
+- **Deferred (open questions):** source-body snippets for top-K seed cards (kept to the card format for
+  v1 determinism); adaptive vs fixed reserve ratio (fixed 15%, tunable via the eval harness).
 
 ## Open questions
 
