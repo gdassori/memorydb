@@ -65,8 +65,9 @@ class IntentResult(BaseModel):
     dict (allowlisted in :mod:`memorydb.filters`). ``confidence`` is validated to ``[0, 1]`` so an
     out-of-range model reply is treated as a parse failure and falls back to the regex classifier.
 
-    Frozen so a cached result handed back from :meth:`LLMIntentClassifier.analyze` cannot be mutated by
-    a caller and silently corrupt the cache (re-review P4); downgrades use ``model_copy`` (P4)."""
+    ``frozen`` blocks attribute reassignment; the cache is additionally protected because
+    :meth:`LLMIntentClassifier.analyze` hands out a deep copy, so a caller mutating ``entities``/
+    ``filters`` cannot corrupt it (re-review P4/P4R3-3); downgrades use ``model_copy``."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -149,7 +150,9 @@ class LLMIntentClassifier:
                     result = result.model_copy(update={"intent": Intent.EXPLAIN})
             except Exception as exc:                             # a guard failure must not raise (spec)
                 _LOG.debug("symbol_exists guard failed (%s); leaving intent unchanged", exc)
-        return result
+        # Hand out an independent copy: `frozen` blocks attribute reassignment but NOT mutation of the
+        # contained entities list / filters dict, so a caller could otherwise corrupt the cache (P4R3-3).
+        return result.model_copy(deep=True)
 
     def _parse(self, query: str) -> IntentResult:
         """The cacheable, store-independent half: LLM call → JSON → validated IntentResult with the
@@ -254,6 +257,7 @@ class RetrievalPlanner:
         filt = dict(result.filters)
         empty = {"intent": "FILTER", "filters": filt, "nodes": [], "matched_ids": [],
                  "dropped_keys": [], "truncated": False}
+        dropped: list = []                        # set before the try so the except can still report it
         try:
             # fetch one past the cap so we can SIGNAL truncation rather than silently dropping matches.
             sql, params, dropped = build_filter_query(result.filters,
@@ -265,7 +269,7 @@ class RetrievalPlanner:
             ids = [r[0] for r in self.store.conn.execute(sql, params).fetchall()]
         except Exception as exc:                  # builder/DB error must not raise to the caller (spec)
             _LOG.debug("FILTER query failed (%s); returning empty result", exc)
-            return {**empty, "note": "filter query error"}
+            return {**empty, "dropped_keys": dropped, "note": "filter query error"}  # keep telemetry (P4R3-2)
         truncated = bool(capped and len(ids) > capped)
         ids = ids[:capped] if capped else ids
         nodes = sorted(self.store.get_nodes(ids), key=lambda n: n["uid"])   # get_nodes() is unordered

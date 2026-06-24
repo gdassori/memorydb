@@ -398,6 +398,30 @@ def test_p4r_3_filter_dict_copy_does_not_corrupt_cache():
     store.close()
 
 
+# --- third-round (P4R3) regressions ------------------------------------------
+
+def test_p4r3_1_minute_precision_since_parses():
+    """Minute-precision (no-seconds) ISO datetimes that fromisoformat accepted must still parse, else
+    the `since` predicate silently drops and FILTER broadens to all ages (P4R3-1)."""
+    from memorydb.filters import _to_epoch
+    base = _to_epoch("2026-06-15T14:30:00")
+    assert isinstance(base, float)
+    assert _to_epoch("2026-06-15T14:30") == base                    # no seconds
+    assert _to_epoch("2026-06-15 14:30") == base                    # space, no seconds
+    assert _to_epoch("2026-06-15T16:30+02:00") == base              # 16:30+02:00 == 14:30 UTC == base
+
+
+def test_p4r3_3_direct_analyze_cannot_corrupt_cache():
+    """A direct analyze() caller mutating entities/filters of the returned result must not corrupt the
+    cached value for the next same-query call (P4R3-3 — frozen alone didn't protect the containers)."""
+    c = LLMIntentClassifier(FakeLLM(_json("FILTER", entities=["a", "b"], filters={"lang": "go"}, confidence=0.9)))
+    r1 = c.analyze("q")
+    r1.entities.append("X")
+    r1.filters["injected"] = "v"
+    r2 = c.analyze("q")                                             # same-query cache hit
+    assert r2.entities == ["a", "b"] and r2.filters == {"lang": "go"}   # cache intact
+
+
 if __name__ == "__main__":
     tests = {n: f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)}
     for name, fn in tests.items():

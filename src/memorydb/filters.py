@@ -35,7 +35,9 @@ _SINCE_FORMATS = (
     "%Y-%m-%d", "%Y%m%d",
     "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
     "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M%z",           # minute precision (no seconds) — re-review P4R3-1
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M%z",
 )
 
 
