@@ -1,5 +1,5 @@
 ---
-id: TD-010
+id: TD-011
 title: "Query embeddings are cached in-memory (with an optional binary dump), scoped to the embedding model not the store"
 status: proposed
 date: 2026-06-26
@@ -8,7 +8,7 @@ superseded_by: null
 tags: [embeddings, cache, performance, retrieval, ports]
 ---
 
-# TD-010: In-memory query-embedding cache, model-scoped
+# TD-011: In-memory query-embedding cache, model-scoped
 
 ## Context
 
