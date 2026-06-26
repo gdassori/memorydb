@@ -12,7 +12,7 @@ and the `agentic spec` tooling).
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [v0-substrate](active/v0-substrate.md) | SQLite store, recursive-CTE traversal, brute-force vectors, intent planner | TD-002..007 | active |
+| [v0-substrate](active/v0-substrate.md) | SQLite store, recursive-CTE traversal, brute-force vectors, intent planner | TD-001..008, 010 | active |
 | [code-adapter-treesitter](completed/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | completed |
 | [python-precise-resolver](completed/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | completed |
 | [schema-migrations](completed/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | completed |
@@ -46,9 +46,9 @@ and the `agentic spec` tooling).
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [memory-adapter-agent-memory](active/memory-adapter-agent-memory.md) | Entities + episodic/semantic/procedural memory adapter | TD-002, TD-008 | planned |
+| [memory-adapter-agent-memory](active/memory-adapter-agent-memory.md) | Entities + episodic/semantic/procedural memory adapter | TD-002, TD-008, TD-009 | planned |
 | [concept-ontology-layer](active/concept-ontology-layer.md) | Auto-extracted concept nodes over the symbol graph | TD-008 | planned |
-| [temporal-confidence-machinery](active/temporal-confidence-machinery.md) | Temporal validity queries + confidence decay/calibration | TD-008 | planned |
+| [temporal-confidence-machinery](active/temporal-confidence-machinery.md) | Temporal validity queries + confidence decay/calibration | TD-008, TD-009 | planned |
 | [reflection-daemon](active/reflection-daemon.md) | Periodic clustering → concept synthesis ("grow your own ontology") | TD-008 | planned |
 
 ---
