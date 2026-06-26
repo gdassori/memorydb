@@ -3,7 +3,7 @@ title: "v0 substrate + retrieval planner (and a multilang CodeAdapter)"
 status: active
 created: 2026-06-22
 author: claude
-related_tds: [TD-002, TD-003, TD-004, TD-005, TD-006, TD-007, TD-008]
+related_tds: [TD-001, TD-002, TD-003, TD-004, TD-005, TD-006, TD-007, TD-008, TD-010]
 components: [store, schema, models, query, vector, ports, planner, embedders, adapters/code]
 ---
 
@@ -15,22 +15,38 @@ Implement the **domain-agnostic substrate** ([TD-002](../../decisions/TD-002-por
 
 ## Approach
 
-`Store` owns a SQLite connection and the schema. `Node`/`Edge` are plain dataclasses; adapters upsert them. `query.py` holds the three primitives — `vector_search`, `traverse` (recursive CTE), `references_to` (graph-exact LOCATE) — plus `subgraph_edges`. `vector.py` provides the `VectorIndex` interface with a pure-Python `BruteForceVectorIndex` default and a stub for the `sqlite-vec` accelerator. `ports.py` declares the `Embedder` / `IntentClassifier` / `Extractor` Protocols. `planner.py` wires it together and routes by intent. `embedders.py` ships a deterministic, dependency-free `HashingEmbedder` so the substrate runs offline. The substrate maintains the `embed_dirty` staleness flag on every node/edge upsert.
+`Store` owns a SQLite connection and the schema. `Node`/`Edge` are `pydantic.BaseModel`s ([TD-010](../../decisions/TD-010-pydantic-domain-models.md)); adapters upsert them. `query.py` holds the three primitives — `vector_search`, `traverse` (recursive CTE), `references_to` (graph-exact LOCATE) — plus `subgraph_edges`. `vector.py` provides the `VectorIndex` interface with a pure-Python `BruteForceVectorIndex` default and the `sqlite-vec` accelerator (`SqliteVecIndex`) behind the *same* interface. `ports.py` declares the `Embedder` / `IntentClassifier` / `Extractor` Protocols. `planner.py` wires it together and routes by intent. `embedders.py` ships a deterministic, dependency-free `HashingEmbedder` so the substrate runs offline. The substrate maintains the `embed_dirty` staleness flag on every node/edge upsert.
+
+## Status — state of the art (2026-06-25)
+
+This spec stays `active` as the living description of the substrate spine. The pieces v0 shipped as
+**stubs/placeholders are now fully realized** in their own `completed/` specs, and are listed here so this
+index reflects current reality:
+
+- `SqliteVecIndex` → [sqlite-vec-acceleration](../completed/sqlite-vec-acceleration.md) (vec0 ANN behind the `VectorIndex` interface).
+- `CodeAdapter` → [code-adapter-treesitter](../completed/code-adapter-treesitter.md) + precise Python edges via [python-precise-resolver](../completed/python-precise-resolver.md).
+- `DefaultIntentClassifier` (regex) → pluggable LLM router + real `FILTER` path via [llm-intent-classifier](../completed/llm-intent-classifier.md).
+- Graph-aware embedding, incremental indexing, schema migrations, the facade, CLI, eval harness, and the
+  context builder are likewise complete (see the [spec index](../README.md)).
+- **Domain models are `pydantic.BaseModel`s** (not dataclasses); `Rel`/`Intent` are `str`-enums — [TD-010](../../decisions/TD-010-pydantic-domain-models.md).
+
+The retrieval/ranking depth (`graph-algorithms-networkx`, `hybrid-ranker`) and the temporal/north-star
+track remain `planned` in `active/`.
 
 ## What Changes
 
 | File | Change |
 |------|--------|
 | `src/memorydb/schema.sql` | **New** — `nodes`, `edges`, `embeddings` tables + indexes; metadata columns (`valid_from`/`valid_to`/`confidence`/`source`, `embed_dirty`) per [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md) |
-| `src/memorydb/models.py` | **New** — `Node`, `Edge` dataclasses; `Intent` enum; `Rel` relation constants |
+| `src/memorydb/models.py` | **New** — `Node`, `Edge` (pydantic models); `Intent` / `Rel` `str`-enums ([TD-010](../../decisions/TD-010-pydantic-domain-models.md)) |
 | `src/memorydb/store.py` | **New** — `Store`: connect/apply-schema, `upsert_node`, `upsert_edge` (by uid, marks endpoints dirty), `set_embedding`, `get_nodes`, `id_for`, `dirty_nodes`, `transaction()` |
-| `src/memorydb/vector.py` | **New** — pack/unpack float32 BLOBs; `BruteForceVectorIndex` (default); `SqliteVecIndex` stub (optional `[vector]`) |
+| `src/memorydb/vector.py` | **New** — pack/unpack float32 BLOBs; `BruteForceVectorIndex` (default); `SqliteVecIndex` (optional `[vector]`) — shipped as a stub in v0, **now fully implemented** ([sqlite-vec-acceleration](../completed/sqlite-vec-acceleration.md)) |
 | `src/memorydb/query.py` | **New** — `vector_search`, `traverse` (recursive CTE, out/in/both + relation filter), `subgraph_edges`, `references_to` |
 | `src/memorydb/ports.py` | **New** — `Embedder` / `IntentClassifier` / `Extractor` Protocols |
 | `src/memorydb/planner.py` | **New** — `DefaultIntentClassifier` (regex) + `RetrievalPlanner.retrieve()` routing LOCATE/EXPLAIN/FILTER |
 | `src/memorydb/embedders.py` | **New** — `HashingEmbedder` (deterministic, dependency-free placeholder) |
 | `src/memorydb/__init__.py` | **New** — public exports |
-| `src/memorydb/adapters/code/__init__.py` | **New (stub)** — placeholder for the tree-sitter `CodeAdapter` ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)) |
+| `src/memorydb/adapters/code/__init__.py` | **New** — v0 placeholder for the tree-sitter `CodeAdapter` ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)), **now the full multilang adapter** ([code-adapter-treesitter](../completed/code-adapter-treesitter.md)) |
 | `pyproject.toml` | **New** — package metadata + optional extras `[vector]`/`[code]`/`[graph]`/`[dev]` |
 | `tests/test_substrate.py` | **New** — build a notification graph, embed, assert LOCATE/EXPLAIN/traverse/staleness |
 | `README.md` | **New** — what MemoryDB is, the embedded thesis, quickstart |

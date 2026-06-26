@@ -3,7 +3,7 @@ title: "MemoryAdapter — agent memory (episodic / semantic / procedural)"
 status: planned
 created: 2026-06-22
 author: claude
-related_tds: [TD-002, TD-008]
+related_tds: [TD-002, TD-008, TD-009]
 components: [adapters/memory]
 ---
 

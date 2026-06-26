@@ -3,8 +3,8 @@
 The substrate knows only ``Node`` / ``Edge`` / ``Vector``. Adapters (code, memory) map
 their concepts onto these. No code- or memory-specific fields live here.
 
-Models are pydantic ``BaseModel``s — validation + ergonomics over plain dataclasses (TD-004, revised
-2026-06-22: pydantic is an allowed core dependency). Construct with keyword arguments.
+Models are pydantic ``BaseModel``s — validation + ergonomics over plain dataclasses (TD-010; pydantic is
+the one core dependency, relaxed in TD-004). Construct with keyword arguments.
 """
 from __future__ import annotations
 
