@@ -45,6 +45,21 @@ class Store:
         authoritative ``embeddings`` BLOBs directly at query time."""
         self._index = index
 
+    def index_remove(self, node_ids: Sequence[int]) -> None:
+        """Notify the active index that nodes are gone (mirrors the ``set_embedding`` upsert hook). A
+        derived ANN index (vec0) MUST drop their rows: a stale row starves k-NN and, on SQLite node-id
+        reuse, scores a re-indexed node by the deleted node's vector (re-review P5-1). A brute-force
+        index (no ``remove``) is ignored. Failures are logged, never raised (the BLOB store is
+        authoritative; ``rebuild_index`` is the backstop)."""
+        idx = self._index
+        if idx is None or not hasattr(idx, "remove"):
+            return
+        for nid in node_ids:
+            try:
+                idx.remove(nid)
+            except Exception:   # noqa: BLE001 - a derived-index hiccup must not break node deletion
+                logging.getLogger(__name__).debug("vec index remove failed for node %s", nid, exc_info=True)
+
     # --- lifecycle ---------------------------------------------------------
     def close(self) -> None:
         self.conn.close()

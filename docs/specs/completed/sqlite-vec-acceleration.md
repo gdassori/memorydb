@@ -155,6 +155,35 @@ some recall. `rebuild_index` is O(n) and run rarely (dim/model change). Memory: 
 - **Delete sync:** node deletion must `DELETE FROM vec_items WHERE node_id = ?` (vec0 has no FK cascade); `rebuild_index`
   is the backstop against drift.
 
+## Review remediation (2026-06-25 — PR #5 mega review)
+
+An adversarial multi-agent review (27 raised → 23 confirmed / 4 refuted, all reproduced empirically against
+sqlite-vec 0.1.9) confirmed the cosine mapping is **correct** (vec0 default `distance` is euclidean L2, so
+`score = 1 − d²/2` reproduces cosine — verified on identical/orthogonal/opposite vectors) but found real defects,
+now all fixed + regression-tested (`test_p5_*`); suite **199 green**:
+
+- **P5-1 (High):** node deletion never called `index.remove`, so a stale `vec_items` row (a) starved k-NN (the
+  nodes-join drops it *after* the KNN, leaving < k live seeds) and (b) on SQLite node-id reuse scored a *new* node
+  by the *deleted* node's vector. Fix: `Store.index_remove()` hook + `Indexer._delete_file` captures the reaped ids
+  and calls it; `search` now **always over-fetches `k×4`** (drift → recall slack, not empty); `rebuild_vector_index()`
+  is the exposed backstop. Verified end-to-end (delete + re-index → 0 orphan rows, ANN seeds == brute force).
+- **P5-2 (Medium):** a transaction rollback dropped the lazily-created `vec_items` while `self.dim` stayed cached
+  → the next upsert hit a missing table (swallowed) and `search` crashed with *no such table*. Fix: `upsert`
+  re-ensures the table and retries on `OperationalError` (self-heal); `search` returns `[]` instead of crashing.
+- **P5-3 (Medium):** a single wrong-dim upsert called `_recreate` and DROPped the whole index. Fix: a wrong-dim
+  upsert is a **no-op** (a dim change is corpus-wide); the new dim is adopted by `rebuild_index()` /
+  `refresh_embeddings(full=True)` (which now rebuilds).
+- **P5-4 (Medium):** the float32 round-trip gave orthogonal vectors a ~3.4e-8 score that passed the planner's
+  `>1e-9` seed filter (a phantom seed). Fix: `search` snaps `|score| < 1e-6` to exact `0.0`, matching brute force.
+- **P5-5 (Low):** a `types` filter over-fetched a fixed `k×4` then post-filtered, starving rare/far types. Fix:
+  escalate the over-fetch (×4) until ≥ k typed matches or the KNN is exhausted.
+- **Also:** `rebuild_index` builds at the **prevailing** (majority) dim, not `max(dim)`, warning on skipped off-dim
+  rows; the backstop is exposed as `MemoryDB.rebuild_vector_index()`. Docs corrected: vec0 KNN in 0.1.x is **exact**
+  (C-speed), not approximate.
+
+Refuted: the max-dim rebuild facets (folded into the Low fix); a zero-length-embedding score mismatch (unreachable —
+`set_embedding` never stores empty vectors); the "ANN/recall slack" wording (a doc nuance, fixed anyway).
+
 ## References
 
 - [TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)

@@ -14,6 +14,7 @@ import sqlite3
 from typing import Optional, Sequence
 
 _LOG = logging.getLogger(__name__)
+_EPS = 1e-6   # snap-to-zero floor for the vec0 float32 cosine round-trip (above the ~1e-7 L2 noise; P5-4)
 
 
 def pack(vec: Sequence[float]) -> bytes:
@@ -67,7 +68,9 @@ class BruteForceVectorIndex:
 
 
 class SqliteVecIndex:
-    """ANN accelerator over the sqlite-vec ``vec0`` virtual table (the ``[vector]`` extra).
+    """Accelerator over the sqlite-vec ``vec0`` virtual table (the ``[vector]`` extra). vec0 KNN in
+    sqlite-vec 0.1.x is an **exact** brute-force scan in C (not approximate) — the win is C-vs-Python
+    speed at the same recall, so results match :class:`BruteForceVectorIndex` exactly.
 
     The ``embeddings`` BLOB stays **authoritative**; ``vec_items`` is a derived, rebuildable index kept
     in sync by :meth:`Store.set_embedding` → :meth:`upsert`. Vectors are unit-normalized (like
@@ -108,26 +111,39 @@ class SqliteVecIndex:
         self.store.set_meta(self._META_DIM, str(int(dim)))
         self.dim = int(dim)
 
-    def _recreate(self, dim: int) -> None:
-        self.conn.execute("DROP TABLE IF EXISTS vec_items")
-        self.dim = None
-        self._ensure_table(dim)
-
-    # --- sync (called from Store.set_embedding / node deletion) ------------
-    def upsert(self, node_id: int, vector: Sequence[float]) -> None:
-        v = normalize(list(vector))
-        if self.dim and len(v) != self.dim:    # model/dim change -> rebuild at the new dim (full reembed refills)
-            self._recreate(len(v))
-        if not self.dim:
-            self._ensure_table(len(v))
+    def _write(self, node_id: int, v: list) -> None:
         # vec0 has no UPSERT (ON CONFLICT) — delete-then-insert is the idempotent upsert for it.
         self.conn.execute("DELETE FROM vec_items WHERE node_id = ?", (int(node_id),))
         self.conn.execute("INSERT INTO vec_items(node_id, embedding) VALUES(?, ?)",
                           (int(node_id), self._serialize(v)))
 
+    # --- sync (called from Store.set_embedding / node deletion) ------------
+    def upsert(self, node_id: int, vector: Sequence[float]) -> None:
+        v = normalize(list(vector))
+        if self.dim and len(v) != self.dim:
+            # A dim/model change is a corpus-wide event — a single wrong-dim row must NOT drop the whole
+            # index (re-review P5-3). No-op here; the new dim is adopted by rebuild_index() / a full
+            # reembed (MemoryDB.refresh_embeddings(full=True) rebuilds).
+            _LOG.debug("vec upsert dim %d != index dim %d (node %s) — skipped; rebuild for a dim change",
+                       len(v), self.dim, node_id)
+            return
+        if not self.dim:
+            self._ensure_table(len(v))
+        try:
+            self._write(node_id, v)
+        except sqlite3.OperationalError:
+            # The lazily-created table can be gone (e.g. a transaction rollback discarded the CREATE while
+            # self.dim stayed cached) — re-ensure and retry once so the index self-heals (re-review P5-2).
+            self._ensure_table(len(v))
+            self._write(node_id, v)
+
     def remove(self, node_id: int) -> None:
-        if self.dim:
+        # Must be called when a node is deleted (Store.index_remove): a stale vec_items row otherwise
+        # starves k-NN and, on node-id reuse, scores a NEW node by the deleted node's vector (P5-1).
+        try:
             self.conn.execute("DELETE FROM vec_items WHERE node_id = ?", (int(node_id),))
+        except sqlite3.OperationalError:
+            pass                               # no table yet -> nothing to remove
 
     # --- query ------------------------------------------------------------
     def search(self, query_vec: Sequence[float], k: int = 10,
@@ -138,42 +154,63 @@ class SqliteVecIndex:
         q = normalize(list(query_vec))
         if len(q) != self.dim:                 # query-dim guard, mirrors the brute-force MR-12 guard
             return []
-        over = k * 4 if types else k           # over-fetch then type-filter so a type filter can't starve k
-        rows = self.conn.execute(
-            "SELECT v.node_id AS node_id, v.distance AS distance, n.uid AS uid, n.type AS type "
-            "FROM vec_items v JOIN nodes n ON n.id = v.node_id "   # join drops stale rows (deleted nodes)
-            "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
-            (self._serialize(q), over),
-        ).fetchall()
-        if types:
-            tset = set(types)
-            rows = [r for r in rows if r["type"] in tset]
-        # cosine = 1 - d²/2 for unit vectors; tie-break by uid asc (churn-invariant, matches brute force).
-        scored = [(1.0 - (r["distance"] * r["distance"]) / 2.0, r["node_id"], r["uid"]) for r in rows]
-        scored.sort(key=lambda t: (-t[0], t[2]))
+        qb = self._serialize(q)
+        tset = set(types) if types else None
+        # ALWAYS over-fetch (not just for a types filter): the nodes-join drops any stale row of a
+        # deleted node, so fetching k would underfill k after the drop (starvation) and miss k-boundary
+        # ties before the uid tie-break (determinism). Escalate further only when a types filter came up
+        # short while the KNN was not yet exhausted (re-review P5-1 / P5-5).
+        over = k * 4
+        while True:
+            try:
+                rows = self.conn.execute(
+                    "SELECT v.node_id AS node_id, v.distance AS distance, n.uid AS uid, n.type AS type "
+                    "FROM vec_items v JOIN nodes n ON n.id = v.node_id "
+                    "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
+                    (qb, over),
+                ).fetchall()
+            except sqlite3.OperationalError:   # table missing after a rollback -> empty, not a crash (P5-2)
+                return []
+            kept = rows if tset is None else [r for r in rows if r["type"] in tset]
+            if tset is None or len(kept) >= k or len(rows) < over:   # enough, or the KNN is exhausted
+                rows = kept
+                break
+            over *= 4
+        scored = []
+        for r in rows:
+            d = r["distance"]
+            s = 1.0 - (d * d) / 2.0
+            if -_EPS < s < _EPS:               # snap float32 L2 noise to exact 0 so orthogonal seeds drop
+                s = 0.0                         # (matches brute-force cosine 0.0 vs the planner >1e-9 filter, P5-4)
+            scored.append((s, r["node_id"], r["uid"]))
+        scored.sort(key=lambda t: (-t[0], t[2]))   # score desc, uid asc (matches brute force)
         return [(s, nid) for s, nid, _uid in scored[:k]]
 
     def rebuild_index(self) -> int:
         """Truncate and repopulate ``vec_items`` from the authoritative ``embeddings`` BLOBs — the
-        backstop against drift (deletes, crashes, a dim/model change). Returns the row count."""
-        rows = self.conn.execute(
-            "SELECT node_id, dim, vector FROM embeddings ORDER BY dim, node_id"
-        ).fetchall()
+        backstop against drift (deletes, crashes, a dim/model change). Builds at the **prevailing** dim
+        (most rows); off-dim rows are skipped with a warning rather than silently dropped. Returns the
+        indexed row count."""
+        row = self.conn.execute(
+            "SELECT dim FROM embeddings GROUP BY dim ORDER BY count(*) DESC, dim LIMIT 1"
+        ).fetchone()
         self.conn.execute("DROP TABLE IF EXISTS vec_items")
         self.dim = None
         self.store.set_meta(self._META_DIM, "")
-        if not rows:
+        if row is None:
             return 0
-        dim = rows[-1]["dim"]                   # the prevailing dim; a healthy corpus is uniform
+        dim = row[0]
         self._ensure_table(dim)
-        n = 0
-        for r in rows:
+        n, skipped = 0, 0
+        for r in self.conn.execute("SELECT node_id, dim, vector FROM embeddings ORDER BY node_id"):
             if r["dim"] != dim:
+                skipped += 1
                 continue
-            # the table was just (re)created, so node_ids are unique -> a plain INSERT suffices.
             self.conn.execute("INSERT INTO vec_items(node_id, embedding) VALUES(?, ?)",
                               (r["node_id"], self._serialize(list(unpack(r["vector"])))))
             n += 1
+        if skipped:
+            _LOG.warning("rebuild_index: skipped %d off-dim embedding(s) (prevailing dim %d)", skipped, dim)
         return n
 
 

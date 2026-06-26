@@ -134,9 +134,21 @@ class MemoryDB:
 
     def refresh_embeddings(self, *, full: bool = False) -> EmbedReport:
         """(Re)embed nodes whose neighborhood changed (TD-006). ``full=True`` re-embeds everything —
-        use it after switching embedding models."""
+        use it after switching embedding models. A full reembed may change the embedding dim, so it
+        rebuilds the derived ANN index from the new BLOBs afterwards (re-review P5-3)."""
         self._ensure_open()
-        return self._pipeline.reembed_all() if full else self._pipeline.refresh()
+        rep = self._pipeline.reembed_all() if full else self._pipeline.refresh()
+        if full:
+            self.rebuild_vector_index()
+        return rep
+
+    def rebuild_vector_index(self) -> int:
+        """Rebuild the derived ANN index (vec0) from the authoritative ``embeddings`` BLOBs — the drift
+        backstop after deletes, a dim/model change, or a crash. No-op (returns 0) for the brute-force
+        backend, which reads the BLOBs directly (re-review P5-1)."""
+        self._ensure_open()
+        idx = getattr(self._planner, "index", None)
+        return idx.rebuild_index() if hasattr(idx, "rebuild_index") else 0
 
     # --- retrieval ---------------------------------------------------------
     def ask(self, query: str, *, k: int = 5, depth: int = 2, as_context: bool = False,

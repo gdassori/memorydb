@@ -154,21 +154,129 @@ def test_types_filter():
 
 
 @ann
-def test_dim_change_rebuild():
+def test_dim_change_via_rebuild_not_wipe():
+    """A single wrong-dim upsert is a NO-OP (must not drop the whole index — P5-3); a real dim change
+    is adopted by rebuild_index() reading the new-dim BLOBs."""
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    for name in ("a", "b"):
+        store.upsert_node(Node(uid=f"m.py::{name}", type="function", name=name))
+        store.set_embedding(store.id_for(f"m.py::{name}"), [1.0, 0.0, 0.0, 0.0])   # dim 4
+    store.commit()
+    assert idx.dim == 4 and store.conn.execute("SELECT COUNT(*) FROM vec_items").fetchone()[0] == 2
+    # switch model: re-embed both at dim 2. The single upserts are wrong-dim NO-OPS, so the dim-4 index
+    # is NOT wiped; only the BLOBs change to dim 2.
+    for name in ("a", "b"):
+        store.set_embedding(store.id_for(f"m.py::{name}"), [1.0, 0.0])             # dim 2
+    store.commit()
+    assert idx.dim == 4                                                  # intact, not wiped by a wrong-dim row
+    # rebuild adopts the new prevailing dim from the authoritative BLOBs
+    assert idx.rebuild_index() == 2 and idx.dim == 2
+    hits = idx.search([1.0, 0.0], k=2)
+    assert {store.get_nodes([nid])[0]["name"] for _s, nid in hits} == {"a", "b"}
+    store.close()
+
+
+@ann
+def test_p5_1_delete_notifies_index_no_starvation():
+    """Deleting a node must drop its vec_items row (Store.index_remove), so a stale row can't starve
+    k-NN nor contaminate via node-id reuse (P5-1)."""
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    ids = _seed(store, _VECTORS)
+    store.index_remove([ids["alpha"]])                                   # the hook indexer._delete_file calls
+    store.conn.execute("DELETE FROM nodes WHERE id = ?", (ids["alpha"],))
+    store.commit()
+    assert store.conn.execute("SELECT COUNT(*) FROM vec_items WHERE node_id = ?",
+                              (ids["alpha"],)).fetchone()[0] == 0          # vec row actually gone
+    hits = idx.search([1.0, 0.0, 0.0, 0.0], k=2)                          # not starved: 2 live seeds
+    assert len(hits) == 2 and ids["alpha"] not in [nid for _s, nid in hits]
+    store.close()
+
+
+@ann
+def test_p5_2_rollback_self_heals_no_crash():
+    """A transaction rollback that discards the lazily-created vec_items must not poison the index: the
+    cached dim is stale, but search returns [] (not a crash) and the next upsert self-heals (P5-2)."""
     store = Store(":memory:")
     idx = SqliteVecIndex(store)
     store.attach_index(idx)
     store.upsert_node(Node(uid="m.py::a", type="function", name="a"))
-    store.set_embedding(store.id_for("m.py::a"), [1.0, 0.0, 0.0, 0.0])   # dim 4
     store.commit()
-    assert idx.dim == 4
-    store.upsert_node(Node(uid="m.py::b", type="function", name="b"))
-    store.set_embedding(store.id_for("m.py::b"), [1.0, 0.0])             # dim 2 -> recreate at new dim
+    nid = store.id_for("m.py::a")
+    try:
+        with store.transaction():
+            store.set_embedding(nid, [1.0, 0.0, 0.0, 0.0])               # lazily CREATEs vec_items, caches dim
+            raise RuntimeError("boom")                                   # -> rollback drops the table
+    except RuntimeError:
+        pass
+    assert idx.dim == 4                                                  # cached dim is now stale vs the DB
+    assert idx.search([1.0, 0.0, 0.0, 0.0], k=1) == []                   # no 'no such table' crash
+    store.set_embedding(nid, [1.0, 0.0, 0.0, 0.0])                       # self-heals (re-ensures the table)
     store.commit()
-    assert idx.dim == 2
-    hits = idx.search([1.0, 0.0], k=5)                                   # only the dim-2 vector survives
-    assert [store.get_nodes([nid])[0]["name"] for _s, nid in hits] == ["b"]
+    assert idx.search([1.0, 0.0, 0.0, 0.0], k=1)[0][1] == nid
     store.close()
+
+
+@ann
+def test_p5_4_orthogonal_score_clamped_to_zero():
+    """An orthogonal stored vector scores exactly 0.0 (clamped from the float32 ~3e-8), so the planner's
+    >1e-9 seed filter drops it like brute force does (P5-4)."""
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    store.upsert_node(Node(uid="m.py::o", type="function", name="o"))
+    store.set_embedding(store.id_for("m.py::o"), [0.0, 1.0, 0.0, 0.0])   # orthogonal to the query
+    store.commit()
+    hits = idx.search([1.0, 0.0, 0.0, 0.0], k=5)
+    assert hits and hits[0][0] == 0.0                                    # exact 0, not 3.4e-8
+    store.close()
+
+
+@ann
+def test_p5_5_types_filter_not_starved():
+    """A rare requested type far from the query must not be starved by many nearer 'noise' nodes of
+    another type — search escalates the over-fetch beyond k*4 (P5-5)."""
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    for i in range(20):                                                  # 20 functions packed near the query
+        store.upsert_node(Node(uid=f"m.py::n{i}", type="function", name=f"n{i}"))
+        store.set_embedding(store.id_for(f"m.py::n{i}"), [1.0, 0.001 * i, 0.0, 0.0])
+    for i in range(2):                                                   # 2 classes farther away
+        store.upsert_node(Node(uid=f"m.py::W{i}", type="class", name=f"W{i}"))
+        store.set_embedding(store.id_for(f"m.py::W{i}"), [0.5, 0.5, 0.0, 0.0])
+    store.commit()
+    hits = idx.search([1.0, 0.0, 0.0, 0.0], k=2, types=["class"])        # k*4=8 nearest are all functions
+    assert sorted(store.get_nodes([nid])[0]["name"] for _s, nid in hits) == ["W0", "W1"]
+    store.close()
+
+
+@ann
+def test_p5_rebuild_picks_majority_dim():
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)                                          # not attached: set_embedding writes BLOBs only
+    for i in range(3):
+        store.upsert_node(Node(uid=f"m.py::a{i}", type="function", name=f"a{i}"))
+        store.set_embedding(store.id_for(f"m.py::a{i}"), [1.0, 0.0, 0.0, 0.0])      # dim 4 (majority)
+    store.upsert_node(Node(uid="m.py::stray", type="function", name="stray"))
+    store.set_embedding(store.id_for("m.py::stray"), [1.0, 0.0])                    # dim 2 (stray)
+    store.commit()
+    assert idx.rebuild_index() == 3 and idx.dim == 4                     # majority dim, stray skipped
+    store.close()
+
+
+@ann
+def test_p5_facade_exposes_rebuild():
+    import warnings
+    from memorydb import MemoryDB
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        db = MemoryDB.open(":memory:")
+    assert db.rebuild_vector_index() == 0                                # callable backstop, empty -> 0
+    db.close()
 
 
 @ann
