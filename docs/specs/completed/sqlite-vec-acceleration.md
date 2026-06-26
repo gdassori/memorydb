@@ -184,6 +184,29 @@ now all fixed + regression-tested (`test_p5_*`); suite **199 green**:
 Refuted: the max-dim rebuild facets (folded into the Low fix); a zero-length-embedding score mismatch (unreachable —
 `set_embedding` never stores empty vectors); the "ANN/recall slack" wording (a doc nuance, fixed anyway).
 
+### Second round — re-review of the P5 fixes (2026-06-25)
+
+A re-review (19 raised → 13 confirmed / 6 refuted, empirical) caught a regression the P5 fixes themselves
+introduced — the recurring "every fix adds a regression" pattern. Fixed + regression-tested (`test_p5r_*`);
+suite **201 green**:
+
+- **P5R-1 (Medium):** the P5-1 always-`k×4` over-fetch and the P5-5 `over *= 4` escalation could exceed vec0's
+  **hard 4096 KNN cap** (`k=4097` raises `OperationalError`), which the P5-2 broad `except` then swallowed into
+  `[]` — so `db.explain(q, k≥1025)` (or a rare-type query on a >4096-row corpus) silently returned no seeds where
+  brute force returned matches. Fix: `over = min(k×4, 4096)`, the escalation stops at 4096 (best-effort, not a
+  crash), and the `except` is narrowed to only the genuine *no such table* case (any other `OperationalError`
+  now surfaces). Verified: `k=1025` over 1500 nodes returns 1025 (was 0).
+- **P5R-2 (Low):** the fixed `1e-6` clamp from P5-4 was *below* the dense float32 noise floor — measured ~5.4e-7
+  at dim 256 but **~1.2e-6 at dim ≥768** (one-hot vectors hide this at 3.4e-8; dense vectors don't) — so the
+  orthogonal phantom-seed leak reopened for production-dim embedders. Fix: the floor now scales with dimension
+  (`max(2e-6, √dim·1e-7)`), staying above the measured noise at every dim. A cosine below this floor is below the
+  ANN's float32 resolution anyway, so snapping it to 0 (and diverging from exact brute force there) is correct.
+
+Refuted: the rollback-then-different-dim self-heal gap (unreachable — a rollback also reverts the embeddings, so
+the next write is at the same dim); the type-escalation O(log n) slowdown (bounded by the 4096 cap); several
+duplicate facets of the clamp/tie-break items. Documented limitation: the uid tie-break is best-effort *within*
+the (≤4096) over-fetch window — >4096 exact-distance ties (many identical embeddings) fall back to vec0 rowid order.
+
 ## References
 
 - [TD-004](../../decisions/TD-004-zero-dep-core-bruteforce-vectors.md)

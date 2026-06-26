@@ -269,6 +269,53 @@ def test_p5_rebuild_picks_majority_dim():
 
 
 @ann
+def test_p5r_large_k_no_silent_empty():
+    """A k whose k*4 over-fetch exceeds vec0's hard 4096 KNN cap must not raise-and-swallow into [] —
+    the over-fetch is capped at 4096 (re-review regression of P5-1/P5-5)."""
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    for i in range(1100):                                       # k=1025 -> k*4=4100 > 4096 before the cap
+        store.upsert_node(Node(uid=f"m::n{i}", type="function", name=f"n{i}"))
+        v = [0.0] * 8
+        v[i % 8] = 1.0
+        store.set_embedding(store.id_for(f"m::n{i}"), v)
+    store.commit()
+    assert len(idx.search([1.0, 0, 0, 0, 0, 0, 0, 0], k=1025)) == 1025   # not silently empty (was 0)
+    store.close()
+
+
+@ann
+def test_p5r_clamp_scales_above_dense_noise_floor():
+    """The snap-to-zero floor scales above the dense-orthogonal float32 noise (~1.2e-6 at dim>=768), so
+    the orthogonal phantom-seed leak stays closed at high dim where a fixed 1e-6 floor leaked (P5-4)."""
+    import math
+    import random
+    from memorydb.vector import _score_floor
+    assert _score_floor(1024) > 1.2e-6                          # above the measured dense noise floor
+    random.seed(11)
+    dim = 768
+
+    def _dot(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+    a = [random.gauss(0, 1) for _ in range(dim)]
+    na = math.sqrt(_dot(a, a)); a = [x / na for x in a]
+    b = [random.gauss(0, 1) for _ in range(dim)]
+    d = _dot(b, a); b = [x - d * ai for x, ai in zip(b, a)]     # Gram-Schmidt: b ⟂ a, dense
+    nb = math.sqrt(_dot(b, b)); b = [x / nb for x in b]
+    store = Store(":memory:")
+    idx = SqliteVecIndex(store)
+    store.attach_index(idx)
+    store.upsert_node(Node(uid="m::o", type="function", name="o"))
+    store.set_embedding(store.id_for("m::o"), b)
+    store.set_embedding(store.id_for("m::o"), b)
+    store.commit()
+    assert idx.search(a, k=1)[0][0] == 0.0                      # orthogonal -> exact 0 (planner drops it)
+    store.close()
+
+
+@ann
 def test_p5_facade_exposes_rebuild():
     import warnings
     from memorydb import MemoryDB

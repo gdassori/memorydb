@@ -14,7 +14,16 @@ import sqlite3
 from typing import Optional, Sequence
 
 _LOG = logging.getLogger(__name__)
-_EPS = 1e-6   # snap-to-zero floor for the vec0 float32 cosine round-trip (above the ~1e-7 L2 noise; P5-4)
+_VEC0_MAX_K = 4096   # sqlite-vec vec0's hard cap on the KNN `k` (k=4097 raises OperationalError)
+
+
+def _score_floor(dim: int) -> float:
+    """Snap-to-zero floor for the vec0 float32 cosine round-trip. A *dense* true-orthogonal pair scores
+    up to ~1.2e-6 in float32 (grows mildly with dim — measured 5.4e-7 at dim 256, ~1.2e-6 at dim ≥768),
+    so a fixed 1e-6 floor would leak phantom seeds at high dim. Scale it above the measured noise so an
+    orthogonal vector snaps to exact 0 and the planner's >1e-9 seed filter drops it, matching brute
+    force (re-review of P5-4). Cosines below this floor are below the ANN's float32 resolution anyway."""
+    return max(2e-6, math.sqrt(dim) * 1e-7)
 
 
 def pack(vec: Sequence[float]) -> bytes:
@@ -156,11 +165,12 @@ class SqliteVecIndex:
             return []
         qb = self._serialize(q)
         tset = set(types) if types else None
+        floor = _score_floor(self.dim)
         # ALWAYS over-fetch (not just for a types filter): the nodes-join drops any stale row of a
         # deleted node, so fetching k would underfill k after the drop (starvation) and miss k-boundary
-        # ties before the uid tie-break (determinism). Escalate further only when a types filter came up
-        # short while the KNN was not yet exhausted (re-review P5-1 / P5-5).
-        over = k * 4
+        # ties before the uid tie-break. CAP at vec0's hard 4096 KNN limit — k*4 (or an escalated
+        # over-fetch) past 4096 raises and must not be swallowed into [] (re-review of P5-1/P5-5).
+        over = min(k * 4, _VEC0_MAX_K)
         while True:
             try:
                 rows = self.conn.execute(
@@ -169,21 +179,28 @@ class SqliteVecIndex:
                     "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
                     (qb, over),
                 ).fetchall()
-            except sqlite3.OperationalError:   # table missing after a rollback -> empty, not a crash (P5-2)
-                return []
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return []                  # table dropped by a rollback (P5-2) -> empty, not a crash
+                raise                          # any other operational error is a real bug -> surface it
             kept = rows if tset is None else [r for r in rows if r["type"] in tset]
-            if tset is None or len(kept) >= k or len(rows) < over:   # enough, or the KNN is exhausted
+            # stop when: no type filter; enough typed; the KNN is exhausted; or we hit vec0's k cap (can't
+            # fetch more — a rarer/farther type beyond the 4096 nearest is best-effort dropped, not crashed).
+            if tset is None or len(kept) >= k or len(rows) < over or over >= _VEC0_MAX_K:
                 rows = kept
                 break
-            over *= 4
+            over = min(over * 4, _VEC0_MAX_K)
         scored = []
         for r in rows:
             d = r["distance"]
             s = 1.0 - (d * d) / 2.0
-            if -_EPS < s < _EPS:               # snap float32 L2 noise to exact 0 so orthogonal seeds drop
-                s = 0.0                         # (matches brute-force cosine 0.0 vs the planner >1e-9 filter, P5-4)
+            if -floor < s < floor:             # snap float32 L2 noise to exact 0 so orthogonal seeds drop
+                s = 0.0                         # (matches brute-force 0.0 vs the planner >1e-9 filter, P5-4)
             scored.append((s, r["node_id"], r["uid"]))
-        scored.sort(key=lambda t: (-t[0], t[2]))   # score desc, uid asc (matches brute force)
+        # score desc, uid asc (matches brute force). NOTE: the uid tie-break only orders WITHIN the
+        # over-fetch window (capped at 4096), so >4096 exact-distance ties degrade to vec0's rowid order
+        # — a best-effort guarantee, reachable only with many identical embeddings.
+        scored.sort(key=lambda t: (-t[0], t[2]))
         return [(s, nid) for s, nid, _uid in scored[:k]]
 
     def rebuild_index(self) -> int:
