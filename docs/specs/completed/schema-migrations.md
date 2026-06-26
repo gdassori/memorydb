@@ -82,7 +82,7 @@ def m2_vec0(conn):
     # else: no-op now; a later 'ensure_vec0' runs when the extension is present
 ```
 **Migration 3 (example, concepts)** — `concepts`, `concept_edges` tables for
-[concept-ontology-layer.md](concept-ontology-layer.md).
+[concept-ontology-layer.md](../active/concept-ontology-layer.md).
 
 ## What changes
 
@@ -153,5 +153,5 @@ new column) should be batched and are noted per-migration; none required for the
 ## References
 
 - [TD-003](../../decisions/TD-003-sqlite-single-store-recursive-cte.md)
-- [sqlite-vec-acceleration.md](sqlite-vec-acceleration.md), [concept-ontology-layer.md](concept-ontology-layer.md)
+- [sqlite-vec-acceleration.md](sqlite-vec-acceleration.md), [concept-ontology-layer.md](../active/concept-ontology-layer.md)
 - SQLite `PRAGMA user_version`.

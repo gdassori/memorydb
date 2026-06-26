@@ -3,7 +3,7 @@ title: "Temporal validity & confidence machinery"
 status: planned
 created: 2026-06-22
 author: claude
-related_tds: [TD-008]
+related_tds: [TD-008, TD-009]
 components: [store, query]
 ---
 

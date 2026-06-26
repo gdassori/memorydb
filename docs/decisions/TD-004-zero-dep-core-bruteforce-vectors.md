@@ -30,26 +30,27 @@ The package **runs and passes its tests out of the box** with no installs — th
 ## Revision (2026-06-22): pydantic is an allowed core dependency
 
 The original "**core depends only on the standard library**" rule is **relaxed**: `pydantic` (>=2) is now
-the **one** core runtime dependency. The domain models (`Node`/`Edge`, the `*Report`s, `EvalCase`/
-`Scorecard`, `ContextResult`, `LangSpec`, `Migration`) are `pydantic.BaseModel`s instead of dataclasses,
-for validation and ergonomics. `Rel`/`Intent` are `str` enums.
+the project's **one** core runtime dependency. The *models* decision this enables — domain types are
+`pydantic.BaseModel`s (and `Rel`/`Intent` are `str`-enums) instead of dataclasses — is recorded in its own
+record, **[TD-010](TD-010-pydantic-domain-models.md)**; this TD keeps ownership of the *vectors / zero-dep*
+posture and notes only the dependency consequence here.
 
 What does **not** change: brute-force cosine stays the default `VectorIndex`; `sqlite-vec`/`tree-sitter`/
 `networkx` remain optional extras; *our own* extraction/query path needs no native engine. What **does**
 change: the package no longer runs with a *completely empty* environment — `pip install pydantic` is
 required, and pydantic v2 pulls in **`pydantic-core`, a compiled (Rust) wheel** (MR-23 — so the earlier
 "no native build" wording was wrong; prebuilt wheels exist for common platforms, but it is not pure
-Python). Tests that previously advertised "stdlib only" now need pydantic. Trade-off accepted: pydantic's
-validation/serialisation ergonomics outweigh the loss of
-the absolute-zero-install property for an embedded library that is already `pip install`-ed.
+Python). Trade-off accepted (see [TD-010](TD-010-pydantic-domain-models.md)): pydantic's validation /
+serialisation ergonomics outweigh the loss of the absolute-zero-install property for an embedded library
+that is already `pip install`-ed.
 
 ## Review note (2026-06-22)
 
 Two honest caveats from review: (1) `BruteForceVectorIndex` recomputes each vector's L2 norm on every query —
 precompute/store norms (or store normalized vectors) when this shows up in a profile; (2) the ~10⁵-vector
-ceiling is an estimate, **not benchmarked** — the eval harness ([eval-harness.md](../specs/active/eval-harness.md))
+ceiling is an estimate, **not benchmarked** — the eval harness ([eval-harness.md](../specs/completed/eval-harness.md))
 should measure the real brute-force→`sqlite-vec` crossover. Note also that `make_vector_index` must keep the
-**cosine** metric consistent across both backends ([sqlite-vec-acceleration.md](../specs/active/sqlite-vec-acceleration.md)).
+**cosine** metric consistent across both backends ([sqlite-vec-acceleration.md](../specs/completed/sqlite-vec-acceleration.md)).
 
 ## Alternatives Considered
 

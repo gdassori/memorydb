@@ -43,9 +43,9 @@ documented trust assumption).
 - **I3 (cross-file pending re-resolution):** ~~deferred~~ **fixed in round 3 (R3L-1)** — a persisted
   `pending_edges` table (migration 4) + name-keyed re-resolution in the indexer. See the round-3 section below.
 - **I7/I14 vector overhaul:** TD-004 accepts brute-force O(n) for v0; pre-normalised vectors + ANN are the job of
-  [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md). Cheap algorithmic wins applied now.
+  [sqlite-vec-acceleration](completed/sqlite-vec-acceleration.md). Cheap algorithmic wins applied now.
 - **I17 traverse cap:** fan-out budgeting belongs with [hybrid-ranker](active/hybrid-ranker.md) /
-  [context-builder-packing](active/context-builder-packing.md).
+  [context-builder-packing](completed/context-builder-packing.md).
 - **I15 file-node embedding:** excluding `type='file'` nodes needs a dirty-flag policy (else they re-try forever);
   deferred as a deliberate decision, not a quick patch.
 

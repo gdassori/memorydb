@@ -248,6 +248,12 @@ class Indexer:
             "  SELECT e.src FROM edges e JOIN nodes d ON d.id = e.dst WHERE d.file_uid = ? AND d.type != 'file')",
             (rel, rel),
         )
+        # Capture the node ids to be reaped BEFORE the DELETE so the derived ANN index (vec0) can drop
+        # their rows — a stale row starves k-NN and, on node-id reuse, contaminates search (P5-1).
+        reaped = [r[0] for r in self.store.conn.execute(
+            "SELECT id FROM nodes WHERE (file_uid = ? AND type != 'file') OR (uid = ? AND type = 'file')",
+            (rel, rel),
+        )]
         # Symbols carry attrs.file_uid; deleting them cascades their edges (FK). Then drop the file node.
         # `file_uid` is the indexed VIRTUAL generated column (migration 3) over attrs.$.file_uid, so this
         # is an indexed lookup, not a full json_extract scan (perf I8).
@@ -255,6 +261,7 @@ class Indexer:
             "DELETE FROM nodes WHERE file_uid = ? AND type != 'file'", (rel,)
         )
         self.store.conn.execute("DELETE FROM nodes WHERE uid = ? AND type = 'file'", (rel,))
+        self.store.index_remove(reaped)   # drop their vec0 rows (no FK cascade on the virtual table)
         # Drop this file's pending edges; they are re-emitted if/when the file is re-indexed (R3L-1).
         self.store.conn.execute("DELETE FROM pending_edges WHERE src_file = ?", (rel,))
 

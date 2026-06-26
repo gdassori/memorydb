@@ -30,11 +30,11 @@ Breadth now, precision incrementally. This is where the `confidence` column (alr
 ## Review note (2026-06-22)
 
 Two gaps from review: (1) the tier values (0.9/0.6/0.3) and the "LOCATE trusts ≥0.9" threshold are
-**unvalidated** — only the eval harness ([eval-harness.md](../specs/active/eval-harness.md)) can calibrate them,
+**unvalidated** — only the eval harness ([eval-harness.md](../specs/completed/eval-harness.md)) can calibrate them,
 so treat them as ordinal until then; (2) the bare-name *global* tier needs a way to store an edge to an
 **unresolved name** (since `upsert_edge` requires existing endpoints) — see the `pending_edges` mechanism in
-[code-adapter-treesitter.md](../specs/active/code-adapter-treesitter.md) and
-[indexer-ingestion-pipeline.md](../specs/active/indexer-ingestion-pipeline.md). The store now keeps **confidence
+[code-adapter-treesitter.md](../specs/completed/code-adapter-treesitter.md) and
+[indexer-ingestion-pipeline.md](../specs/completed/indexer-ingestion-pipeline.md). The store now keeps **confidence
 monotonic** on upsert (`MAX(old, new)`), so a precise edge is never downgraded by a later coarse pass.
 
 ## Alternatives Considered
