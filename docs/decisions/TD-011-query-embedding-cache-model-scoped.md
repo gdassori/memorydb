@@ -1,7 +1,7 @@
 ---
 id: TD-011
 title: "Query embeddings are cached in-memory (with an optional binary dump), scoped to the embedding model not the store"
-status: proposed
+status: accepted
 date: 2026-06-26
 supersedes: null
 superseded_by: null
@@ -158,6 +158,22 @@ The dump's *content* is model-scoped (validated by the header), but the *file pa
 
 Both hold the same model-validated content. **Lean (a)** (model-keyed) to stay consistent with the
 model-scoping; expose the path so a caller can choose (b) or an explicit location.
+
+## Implementation (2026-06-26)
+
+- [`src/memorydb/query_cache.py`](../../src/memorydb/query_cache.py) — `QueryEmbeddingCache`: sha256-keyed
+  in-memory map, `get`/`put` (rewritable, bounded oldest-evicted), `clear`, and `dump`/`load` (the
+  fixed-stride `MQEC` binary, atomic write, model-validated load — missing/corrupt/wrong-model/truncated →
+  ignored, returns 0). Reuses `vector.pack`/`unpack` for the float32 vectors.
+- [`planner.py`](../../src/memorydb/planner.py) — `RetrievalPlanner` takes an optional `query_cache`
+  (lazily built from the embedder's `model`/`dim`; injectable to share across planners using the same
+  model); `explain()` embeds via `_embed_query()`, a cache lookup before `embedder.embed`.
+- [`api.py`](../../src/memorydb/api.py) — `MemoryDB.open(..., query_cache=…)` plus `clear_query_cache()`,
+  `dump_query_cache(path)`, `load_query_cache(path)`. The **file location is the caller's choice** (explicit
+  path), deferring the open question above rather than baking in (a) or (b).
+- Tests: `tests/test_query_cache.py` (get/put/sha256-keying, rewrite, wrong-dim ignore, bound eviction,
+  clear, dump/load round-trip, wrong-model/dim/corrupt/truncated rejection, planner cache-hit skips
+  re-embed, facade clear/dump/load). Suite **212 green**.
 
 ## References
 
