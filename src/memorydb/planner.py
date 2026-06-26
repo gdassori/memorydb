@@ -182,10 +182,15 @@ class RetrievalPlanner:
         self._query_cache = query_cache
 
     def _ensure_query_cache(self):
+        model = getattr(self.embedder, "model", None) or type(self.embedder).__name__
+        dim = getattr(self.embedder, "dim", None)
         if self._query_cache is None:
             from .query_cache import QueryEmbeddingCache
-            model = getattr(self.embedder, "model", None) or type(self.embedder).__name__
-            self._query_cache = QueryEmbeddingCache(model, getattr(self.embedder, "dim", None))
+            self._query_cache = QueryEmbeddingCache(model, dim)
+        else:
+            # An injected/shared cache may have been tagged for a different model/dim — reconcile (clear
+            # on mismatch) so explain() never serves a cross-model/wrong-dim query vector (TD-011 T11-1).
+            self._query_cache.reconcile(model, dim)
         return self._query_cache
 
     @property

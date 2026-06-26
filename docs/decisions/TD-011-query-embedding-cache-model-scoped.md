@@ -71,14 +71,15 @@ every record is the same width, so the file is a header + a tight array of recor
 
 ```
   magic    "MQEC"              4 bytes            (MemoryDB Query Embedding Cache)
-  version  u8                  1 byte
+  version  u8                  1 byte             (=2)
   dim      u32  LE             vector dimension D
-  mlen     u16  LE             length of model_id
+  mlen     u16  LE             length of model_id (dump raises if > 65535 bytes)
   model    mlen UTF-8          the embedding model id  (the scoping key)
   count    u32  LE             number of records
+  crc32    u32  LE             CRC32 of the records body (catches same-length corruption)
   count × record  (fixed stride = 32 + 4*D bytes):
      key     32 bytes          sha256(query)  (raw digest, not hex)
-     vector  D × float32 LE    array('f').tobytes()  ==  the substrate's pack()
+     vector  D × float32 LE    explicitly little-endian (byteswapped on a big-endian host)
 ```
 
 - **Load** validates `magic`/`version`, then requires `model == embedder.model` and `dim == embedder.dim`;
@@ -174,6 +175,23 @@ model-scoping; expose the path so a caller can choose (b) or an explicit locatio
 - Tests: `tests/test_query_cache.py` (get/put/sha256-keying, rewrite, wrong-dim ignore, bound eviction,
   clear, dump/load round-trip, wrong-model/dim/corrupt/truncated rejection, planner cache-hit skips
   re-embed, facade clear/dump/load). Suite **212 green**.
+
+## Review remediation (2026-06-26 — mega review)
+
+An adversarial multi-agent review (18 raised → 16 confirmed) of the first implementation found real defects,
+all fixed + regression-tested (suite **221 green**):
+
+- **Cross-model leak (the headline):** an injected/shared cache was never reconciled against the embedder, so
+  `explain()` could serve a cross-model or wrong-dim vector — breaking the model-scoping guarantee. Added
+  `QueryEmbeddingCache.reconcile(model_id, dim)` (clears on mismatch) which `RetrievalPlanner._ensure_query_cache`
+  calls; `put()` now **adopts** the real embedding's dim (instead of silently dropping a wrong-dim vector that
+  would permanently disable the cache after a stale `load`/advertised dim).
+- **Concurrent dumps** to one shared file fought over a single `{path}.tmp` → `FileNotFoundError`. Now each writer
+  uses a unique `tempfile.mkstemp` temp in the same dir, atomically renamed; the temp is cleaned up on any failure.
+- **Format hardening:** vectors are now **explicitly little-endian** (byteswapped on a big-endian host) to match
+  the documented format; a **CRC32** catches same-length corruption a size check misses; `dump` guards the u16
+  model-len; `load` **merges** (keeps live entries) instead of replacing; query hashing uses `surrogatepass` so a
+  lone-surrogate query no longer raises through `explain()`. Bumped the format to version 2.
 
 ## References
 
