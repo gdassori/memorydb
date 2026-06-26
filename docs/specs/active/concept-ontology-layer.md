@@ -24,7 +24,7 @@ from the indexed graph. Done = `EXPLAIN`-style questions ("how does mass notific
 
 This is AkasicDB's "ontology" idea, mapped onto our substrate ([research/akasicdb-2026.md](../../research/akasicdb-2026.md)).
 Concepts are just `Node`s (`type="Concept"`) with edges to symbols/facts — no schema change beyond optional
-`concepts`/`concept_edges` convenience tables (a migration, [schema-migrations.md](schema-migrations.md)). Extraction
+`concepts`/`concept_edges` convenience tables (a migration, [schema-migrations.md](../completed/schema-migrations.md)). Extraction
 is LLM-assisted and must be **proposed, then verified** (concepts are higher-confidence claims than coarse edges).
 
 ## Data model & interfaces
@@ -111,9 +111,9 @@ Retrieval gains: concept seeds shorten multi-hop EXPLAIN paths.
 
 A `Concept` node has no `attrs.signature`, so the graph-aware serializer must be **type-aware**: concepts serialize as
 name + description + their concept edges (`IMPLEMENTED_BY`/`STORES`/…), with code-specific fields optional. This is
-handled by making signature/docstring optional in the serializer ([graph-aware-embedding-pipeline.md](graph-aware-embedding-pipeline.md)).
+handled by making signature/docstring optional in the serializer ([graph-aware-embedding-pipeline.md](../completed/graph-aware-embedding-pipeline.md)).
 
 ## References
 
 - [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)
-- [reflection-daemon.md](reflection-daemon.md), [schema-migrations.md](schema-migrations.md), [research/akasicdb-2026.md](../../research/akasicdb-2026.md)
+- [reflection-daemon.md](reflection-daemon.md), [schema-migrations.md](../completed/schema-migrations.md), [research/akasicdb-2026.md](../../research/akasicdb-2026.md)

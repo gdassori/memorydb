@@ -47,9 +47,9 @@ the absolute-zero-install property for an embedded library that is already `pip 
 
 Two honest caveats from review: (1) `BruteForceVectorIndex` recomputes each vector's L2 norm on every query —
 precompute/store norms (or store normalized vectors) when this shows up in a profile; (2) the ~10⁵-vector
-ceiling is an estimate, **not benchmarked** — the eval harness ([eval-harness.md](../specs/active/eval-harness.md))
+ceiling is an estimate, **not benchmarked** — the eval harness ([eval-harness.md](../specs/completed/eval-harness.md))
 should measure the real brute-force→`sqlite-vec` crossover. Note also that `make_vector_index` must keep the
-**cosine** metric consistent across both backends ([sqlite-vec-acceleration.md](../specs/active/sqlite-vec-acceleration.md)).
+**cosine** metric consistent across both backends ([sqlite-vec-acceleration.md](../specs/completed/sqlite-vec-acceleration.md)).
 
 ## Alternatives Considered
 

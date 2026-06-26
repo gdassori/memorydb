@@ -1,7 +1,7 @@
 # Sample eval suite
 
 A tiny 2-file Python fixture with a deterministic call graph, for the retrieval-quality harness
-([eval-harness spec](../../../docs/specs/active/eval-harness.md)).
+([eval-harness spec](../../../docs/specs/completed/eval-harness.md)).
 
 - `repo/notifications.py` — `send_notification` (calls `enqueue`), `enqueue`.
 - `repo/jobs.py` — `MassNotificationJob.run` (calls `send_notification`, imported cross-file).

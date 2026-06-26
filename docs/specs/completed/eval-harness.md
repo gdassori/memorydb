@@ -18,7 +18,7 @@ components: [eval]
 
 `memorydb-eval run <suite>` indexes a fixture repo, runs labeled queries, and reports metrics
 (LOCATE precision/recall/F1, EXPLAIN recall@k / MRR / nDCG). Done = a single command yields a scorecard, and
-ranking changes ([hybrid-ranker.md](hybrid-ranker.md)) can be compared run-over-run.
+ranking changes ([hybrid-ranker.md](../active/hybrid-ranker.md)) can be compared run-over-run.
 
 ## Background & constraints
 
@@ -141,4 +141,4 @@ all) to expose coarse-edge false positives ([TD-005](../../decisions/TD-005-mult
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)
-- [hybrid-ranker.md](hybrid-ranker.md), [public-api-facade.md](public-api-facade.md)
+- [hybrid-ranker.md](../active/hybrid-ranker.md), [public-api-facade.md](public-api-facade.md)

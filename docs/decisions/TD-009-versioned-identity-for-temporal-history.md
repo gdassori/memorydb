@@ -46,7 +46,7 @@ The single-table alternative (allow duplicate `uid`s, gate uniqueness with a par
 **every existing query** to add `WHERE valid_to IS NULL` or risk reading stale versions — a tax on the whole codebase
 ([TD-003](TD-003-sqlite-single-store-recursive-cte.md) queries, the planner, embeddings). History tables keep the hot
 path identical and make temporal **fully opt-in**: code retrieval never pays for it, and v0 needs **no change now** (the
-history tables arrive in a migration when temporal lands, [schema-migrations.md](../specs/active/schema-migrations.md)).
+history tables arrive in a migration when temporal lands, [schema-migrations.md](../specs/completed/schema-migrations.md)).
 
 ## Consequences
 
