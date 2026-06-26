@@ -113,7 +113,7 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 ## Open questions
 
 - **Learn the weights** from eval data vs hand-tuned defaults? **Lean** hand-tuned for v1; expose them so the
-  eval harness ([eval-harness.md](eval-harness.md)) can grid-search later.
+  eval harness ([eval-harness.md](../completed/eval-harness.md)) can grid-search later.
 - **Per-intent weights** (LOCATE vs EXPLAIN)? **Lean** EXPLAIN uses the full fusion; LOCATE bypasses the ranker
   (it is exact, [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)).
 
@@ -133,4 +133,4 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 ## References
 
 - [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md), [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)
-- [graph-algorithms-networkx.md](graph-algorithms-networkx.md), [context-builder-packing.md](context-builder-packing.md), [eval-harness.md](eval-harness.md)
+- [graph-algorithms-networkx.md](graph-algorithms-networkx.md), [context-builder-packing.md](../completed/context-builder-packing.md), [eval-harness.md](../completed/eval-harness.md)

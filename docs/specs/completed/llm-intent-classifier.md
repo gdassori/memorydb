@@ -153,7 +153,7 @@ LLM call is the latency cost — bounded by caching and the tiny prompt.
 
 - **Structured output**: rely on JSON-in-text + validation, or a tool/function-calling schema if the client
   supports it? **Lean** JSON+validation for portability; use tool-calling when the injected client offers it.
-- **Entity → concept linkage**: should `entities` seed the concept layer ([concept-ontology-layer.md](concept-ontology-layer.md))? **Lean** yes, once concepts exist.
+- **Entity → concept linkage**: should `entities` seed the concept layer ([concept-ontology-layer.md](../active/concept-ontology-layer.md))? **Lean** yes, once concepts exist.
 
 ## Risks
 
@@ -230,4 +230,4 @@ LLM-fallback contract, not DB errors); `max_cache=0` disabling the bound (a deli
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)
-- [context-builder-packing.md](context-builder-packing.md), [hybrid-ranker.md](hybrid-ranker.md)
+- [context-builder-packing.md](context-builder-packing.md), [hybrid-ranker.md](../active/hybrid-ranker.md)

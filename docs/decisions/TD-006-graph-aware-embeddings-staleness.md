@@ -43,7 +43,7 @@ Clarification on staleness: under the code uid scheme (`relpath::qualname`) a *r
 code it is a delete+add, **not** an in-place rename — the "mark depth-1 neighbors on rename" cascade therefore
 applies to **agent-memory entities** (stable uids), not code symbols. `upsert_edge` marks both endpoints dirty;
 the serializer reads a node's neighbors via the new `query.node_neighborhood` helper
-([graph-aware-embedding-pipeline.md](../specs/active/graph-aware-embedding-pipeline.md)).
+([graph-aware-embedding-pipeline.md](../specs/completed/graph-aware-embedding-pipeline.md)).
 
 ## Alternatives Considered
 

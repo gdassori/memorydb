@@ -13,34 +13,34 @@ and the `agentic spec` tooling).
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
 | [v0-substrate](active/v0-substrate.md) | SQLite store, recursive-CTE traversal, brute-force vectors, intent planner | TD-002..007 | active |
-| [code-adapter-treesitter](active/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | completed |
-| [python-precise-resolver](active/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | completed |
-| [schema-migrations](active/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | completed |
-| [indexer-ingestion-pipeline](active/indexer-ingestion-pipeline.md) | Directory walk, incremental (mtime/hash) re-index, deletions, batching | TD-003, TD-005 | completed |
+| [code-adapter-treesitter](completed/code-adapter-treesitter.md) | Multilang symbol + coarse-edge extraction via tree-sitter | TD-005 | completed |
+| [python-precise-resolver](completed/python-precise-resolver.md) | High-confidence Python edges via `ast`/`symtable` | TD-005 | completed |
+| [schema-migrations](completed/schema-migrations.md) | Schema versioning + forward migrations | TD-003 | completed |
+| [indexer-ingestion-pipeline](completed/indexer-ingestion-pipeline.md) | Directory walk, incremental (mtime/hash) re-index, deletions, batching | TD-003, TD-005 | completed |
 
 ## 2. Embeddings & vectors
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [graph-aware-embedding-pipeline](active/graph-aware-embedding-pipeline.md) | Neighborhood serialization + `embed_dirty`-driven re-embedding | TD-006 | completed |
-| [sqlite-vec-acceleration](active/sqlite-vec-acceleration.md) | `SqliteVecIndex` + `vec0` virtual table behind the `VectorIndex` interface | TD-004 | completed |
+| [graph-aware-embedding-pipeline](completed/graph-aware-embedding-pipeline.md) | Neighborhood serialization + `embed_dirty`-driven re-embedding | TD-006 | completed |
+| [sqlite-vec-acceleration](completed/sqlite-vec-acceleration.md) | `SqliteVecIndex` + `vec0` virtual table behind the `VectorIndex` interface | TD-004 | completed |
 
 ## 3. Retrieval & ranking
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [llm-intent-classifier](active/llm-intent-classifier.md) | Pluggable LLM router + `FILTER` path + entity extraction | TD-007 | completed |
+| [llm-intent-classifier](completed/llm-intent-classifier.md) | Pluggable LLM router + `FILTER` path + entity extraction | TD-007 | completed |
 | [graph-algorithms-networkx](active/graph-algorithms-networkx.md) | On-demand subgraph → PageRank/centrality scoring | TD-003 | planned |
 | [hybrid-ranker](active/hybrid-ranker.md) | Fuse vector score + centrality + confidence + recency into one ranking | TD-006, TD-007 | planned |
-| [context-builder-packing](active/context-builder-packing.md) | Subgraph → token-budgeted, LLM-ready context | TD-007 | completed |
+| [context-builder-packing](completed/context-builder-packing.md) | Subgraph → token-budgeted, LLM-ready context | TD-007 | completed |
 
 ## 4. API & tooling
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [public-api-facade](active/public-api-facade.md) | Top-level `MemoryDB` class & ergonomic query API | TD-002 | completed |
-| [cli](active/cli.md) | `memorydb index / query / locate / explain / status / reembed` command line | — | completed |
-| [eval-harness](active/eval-harness.md) | Retrieval-quality benchmarks (LOCATE precision, EXPLAIN relevance) | TD-007 | completed |
+| [public-api-facade](completed/public-api-facade.md) | Top-level `MemoryDB` class & ergonomic query API | TD-002 | completed |
+| [cli](completed/cli.md) | `memorydb index / query / locate / explain / status / reembed` command line | — | completed |
+| [eval-harness](completed/eval-harness.md) | Retrieval-quality benchmarks (LOCATE precision, EXPLAIN relevance) | TD-007 | completed |
 
 ## 5. Second product & deferred (north-star)
 

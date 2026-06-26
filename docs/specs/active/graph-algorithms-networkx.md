@@ -100,7 +100,7 @@ subgraph is sub-millisecond. Whole-graph algorithms are gated behind a ceiling w
 ## Review remediation (2026-06-22)
 
 The whole-graph PageRank ceiling is **unbenchmarked** — keep it strictly behind the node-count limit (degrade to the
-cheap degree-centrality fallback above it) and let the eval harness ([eval-harness.md](eval-harness.md)) measure where
+cheap degree-centrality fallback above it) and let the eval harness ([eval-harness.md](../completed/eval-harness.md)) measure where
 the subgraph-local variant must take over. Cached scores are derived/rebuildable, per the
 [TD-003 review note](../../decisions/TD-003-sqlite-single-store-recursive-cte.md).
 
