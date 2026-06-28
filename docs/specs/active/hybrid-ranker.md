@@ -63,7 +63,7 @@ exponential decay above. `breakdown` keeps each term for debugging and the eval 
 
 1. Gather candidates (seeds + traversal expansion from the planner).
 2. `cos_sim`: from the vector index scores (or compute against `query_vec`).
-3. `centrality`: `GraphView(store).pagerank(subgraph)` ([graph-algorithms-networkx.md](graph-algorithms-networkx.md));
+3. `centrality`: `GraphView(store).pagerank(subgraph)` ([graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md));
    fallback to degree centrality if `[graph]` absent.
 4. `confidence`: mean confidence of edges incident to the node.
 5. `recency`: from the owning `file` node's `attrs.mtime`.
@@ -133,4 +133,4 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 ## References
 
 - [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md), [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)
-- [graph-algorithms-networkx.md](graph-algorithms-networkx.md), [context-builder-packing.md](../completed/context-builder-packing.md), [eval-harness.md](../completed/eval-harness.md)
+- [graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md), [context-builder-packing.md](../completed/context-builder-packing.md), [eval-harness.md](../completed/eval-harness.md)

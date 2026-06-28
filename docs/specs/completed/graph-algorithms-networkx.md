@@ -1,7 +1,8 @@
 ---
 title: "On-demand graph algorithms via NetworkX"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-28
 author: claude
 related_tds: [TD-003]
 components: [query, graph]
@@ -80,11 +81,29 @@ subgraph is sub-millisecond. Whole-graph algorithms are gated behind a ceiling w
 
 ## Tasks
 
-- [ ] `GraphView.subgraph` building an `nx.DiGraph` from `traverse` + `subgraph_edges`
-- [ ] `pagerank` / `centrality` / `shortest_path` / `communities` wrappers
-- [ ] pure-Python degree-centrality fallback (zero-dep)
-- [ ] node-count ceiling + degrade-to-degree behavior
-- [ ] zero-dep + [graph]-extra tests
+- [x] `GraphView.subgraph` building an `nx.DiGraph` from `traverse` + `subgraph_edges`
+- [x] `pagerank` / `centrality` / `shortest_path` / `communities` wrappers
+- [x] pure-Python degree-centrality fallback (zero-dep)
+- [x] node-count ceiling + degrade-to-degree behavior
+- [x] zero-dep + [graph]-extra tests
+
+## Implementation notes (2026-06-28)
+
+Landed as [`src/memorydb/graph.py`](../../../src/memorydb/graph.py) (`GraphView`), tested by
+[`tests/test_graph.py`](../../../tests/test_graph.py) (16 cases; 6 zero-dep + 10 `[graph]`-gated).
+
+- **uid↔id:** `subgraph_edges` returns endpoints as *uid*; the view maps them back to integer `node_id`s
+  (via `store.get_nodes`) so every score is keyed by `node_id` as specified — `query.py` was reused unchanged.
+- **PageRank is pure-Python power iteration** (`_pagerank_power`), not `nx.pagerank`: NetworkX ≥3 routes
+  `pagerank` through SciPy, which the lightweight `[graph]` extra (`networkx` only) deliberately does not
+  pull in. The other algorithms (betweenness/closeness/communities/shortest_path) are NetworkX's own
+  pure-Python implementations, so `[graph] = ["networkx>=3.0"]` covers everything as declared.
+- **Centrality:** `betweenness`/`closeness` run *unweighted* — our edge `weight` is a confidence
+  (similarity), not a distance, so feeding it to path-based centralities would invert them. Degree routes
+  through the zero-dep `_degree_centrality_raw` so the `[graph]` and no-extra paths return identical scores.
+- **Ceiling:** whole-graph (`sg=None`) PageRank above `node_ceiling` (50k) warns and degrades to the cheap
+  degree fallback (built straight from SQL); `_global_graph` raises above the ceiling for the NetworkX kinds.
+- **Lazy import:** `import memorydb` never imports NetworkX (asserted in tests); only the nx-backed methods do.
 
 ## Open questions
 

@@ -32,7 +32,7 @@ Embedded, single-file, durable, and every modality is **joinable in one query** 
 Recursive-CTE traversal was verified to terminate on cyclic graphs (the `UNION` dedups reachable nodes). To
 keep "NetworkX is never the source of truth" unambiguous: any PageRank/centrality scores cached back onto nodes
 are **derived and rebuildable** from the edges table, never authoritative
-([graph-algorithms-networkx.md](../specs/active/graph-algorithms-networkx.md)).
+([graph-algorithms-networkx.md](../specs/completed/graph-algorithms-networkx.md)).
 
 ## Alternatives Considered
 

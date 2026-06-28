@@ -30,7 +30,7 @@ and the `agentic spec` tooling).
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
 | [llm-intent-classifier](completed/llm-intent-classifier.md) | Pluggable LLM router + `FILTER` path + entity extraction | TD-007 | completed |
-| [graph-algorithms-networkx](active/graph-algorithms-networkx.md) | On-demand subgraph → PageRank/centrality scoring | TD-003 | planned |
+| [graph-algorithms-networkx](completed/graph-algorithms-networkx.md) | On-demand subgraph → PageRank/centrality scoring | TD-003 | completed |
 | [hybrid-ranker](active/hybrid-ranker.md) | Fuse vector score + centrality + confidence + recency into one ranking | TD-006, TD-007 | planned |
 | [context-builder-packing](completed/context-builder-packing.md) | Subgraph → token-budgeted, LLM-ready context | TD-007 | completed |
 

@@ -11,6 +11,7 @@ from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
 from .indexer import IgnoreMatcher, Indexer, IndexReport
 from .filters import build_filter_query
+from .graph import GraphView
 from .models import Edge, Intent, Node, Rel
 from .planner import DefaultIntentClassifier, IntentResult, LLMIntentClassifier, RetrievalPlanner
 from .ports import LLMClient
@@ -41,6 +42,7 @@ __all__ = [
     "LLMClient",
     "QueryEmbeddingCache",
     "build_filter_query",
+    "GraphView",
     "HashingEmbedder",
     "EmbeddingPipeline",
     "DefaultSerializer",
