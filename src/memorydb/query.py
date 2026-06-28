@@ -108,6 +108,31 @@ def node_neighborhood(store, node_id: int) -> dict:
     return {"out": [dict(r) for r in out], "in": [dict(r) for r in inc]}
 
 
+def subgraph_edges_by_id(store, node_ids: Sequence[int]) -> list[dict]:
+    """Induced-subgraph edges with **integer** endpoint ids (``src``/``dst`` as node ids, not uids).
+
+    The id-keyed sibling of :func:`subgraph_edges` for graph algorithms that key on ``node_id``
+    (``GraphView``): same bounded ``_subgraph_ids`` TEMP-table PK-join, but it skips the two ``nodes``
+    joins that exist only to emit uids — so the caller avoids an id→uid→id round-trip (and the ``SELECT *``
+    node fetch it would otherwise need to map uids back). Both endpoints are guaranteed within ``node_ids``.
+    """
+    if not node_ids:
+        return []
+    conn = store.conn
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _subgraph_ids(id INTEGER PRIMARY KEY)")
+    conn.execute("DELETE FROM _subgraph_ids")
+    conn.executemany("INSERT OR IGNORE INTO _subgraph_ids(id) VALUES(?)", [(int(i),) for i in node_ids])
+    sql = (
+        "SELECT e.src AS src, e.dst AS dst, e.relation AS relation, e.confidence AS confidence "
+        "FROM edges e "
+        "JOIN _subgraph_ids a ON a.id = e.src "
+        "JOIN _subgraph_ids b ON b.id = e.dst "
+        # total order so the edge list is plan-independent (RR3-1), mirroring subgraph_edges.
+        "ORDER BY e.confidence DESC, e.src, e.dst, e.relation"
+    )
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
 def subgraph_edges(store, node_ids: Sequence[int]) -> list[dict]:
     """All edges whose both endpoints are within ``node_ids`` (the induced subgraph).
 

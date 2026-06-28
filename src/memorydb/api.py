@@ -16,6 +16,7 @@ from . import query as Q
 from .context import ContextBuilder, ContextResult
 from .embedders import HashingEmbedder
 from .embedding_pipeline import DefaultSerializer, EmbeddingPipeline, EmbedReport
+from .graph import GraphView
 from .indexer import IgnoreMatcher, Indexer, IndexReport
 from .planner import DefaultIntentClassifier, RetrievalPlanner
 from .store import Store
@@ -52,8 +53,10 @@ class MemoryDB:
     / ``context`` cover the common flows. Every port (embedder, extractors, classifier, vector index)
     is injectable, and :attr:`store` / :attr:`planner` are escape hatches to the raw substrate."""
 
-    def __init__(self, store, embedder, extractors, classifier, vector_index, query_cache=None) -> None:
+    def __init__(self, store, embedder, extractors, classifier, vector_index, query_cache=None,
+                 graph_view=None) -> None:
         self._store = store
+        self._graph_view = graph_view   # lazily built on first access if not injected (TD-003 / graph spec)
         self._embedder = embedder
         self._extractors = list(extractors)
         self._serializer = DefaultSerializer()
@@ -70,7 +73,7 @@ class MemoryDB:
     # --- construction ------------------------------------------------------
     @classmethod
     def open(cls, path: str = ":memory:", *, embedder=None, extractors=None,
-             classifier=None, vector_index=None, query_cache=None) -> "MemoryDB":
+             classifier=None, vector_index=None, query_cache=None, graph_view=None) -> "MemoryDB":
         """Open (or create) a MemoryDB at ``path`` with sane, overridable defaults.
 
         Defaults: ``HashingEmbedder`` (offline, NOT semantic-quality — pass a real model for
@@ -91,7 +94,8 @@ class MemoryDB:
             classifier = DefaultIntentClassifier()
         if vector_index is None:
             vector_index = make_vector_index(store)
-        db = cls(store, embedder, extractors, classifier, vector_index, query_cache=query_cache)
+        db = cls(store, embedder, extractors, classifier, vector_index, query_cache=query_cache,
+                 graph_view=graph_view)
         db._check_embedder_compat()
         return db
 
@@ -209,6 +213,16 @@ class MemoryDB:
     @property
     def planner(self) -> RetrievalPlanner:
         return self._planner
+
+    @property
+    def graph_view(self) -> GraphView:
+        """On-demand graph algorithms over the substrate (PageRank/centrality/paths — TD-003). Lazily
+        built over :attr:`store` on first access (or injected via ``open(graph_view=…)``); the hybrid
+        ranker reaches centrality through ``graph_view.centrality_scores(seed_ids)``."""
+        self._ensure_open()
+        if self._graph_view is None:
+            self._graph_view = GraphView(self._store)
+        return self._graph_view
 
     def _ensure_open(self) -> None:
         if self._closed:

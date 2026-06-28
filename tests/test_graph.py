@@ -6,6 +6,7 @@ tests). Mirrors the per-test gating convention in test_vector_index.py.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -94,6 +95,14 @@ def test_degree_fallback_collapses_parallel_relations():
     store.close()
 
 
+def test_require_networkx_real_path_raises_actionable_error(monkeypatch):
+    # Drive the REAL _require_networkx with networkx hidden (not a stub of itself): `import networkx`
+    # fails, so the actionable message + chaining are what's exercised (P8-2).
+    monkeypatch.setitem(sys.modules, "networkx", None)   # makes `import networkx` raise ImportError
+    with pytest.raises(ImportError, match=r"memorydb\[graph\]"):
+        G._require_networkx()
+
+
 def test_networkx_absent_gates_only_the_nx_methods(monkeypatch):
     # Simulate the [graph] extra missing: nx methods raise a clear ImportError; degree stays zero-dep.
     def boom():
@@ -110,7 +119,22 @@ def test_networkx_absent_gates_only_the_nx_methods(monkeypatch):
     # ...but the pure-Python fallbacks still work with no NetworkX.
     assert gv.degree_centrality([ids["Job"]], depth=2)
     assert gv.centrality(None, kind="degree")               # global degree, no nx
+    # centrality_scores degrades INTERNALLY to the degree fallback (no caller branch, no raise).
+    scores = gv.centrality_scores([ids["NotificationService"]], depth=2)
+    assert scores[ids["NotificationService"]] == max(scores.values())
     store.close()
+
+
+def test_import_memorydb_does_not_import_networkx():
+    # Lazy-import guarantee (the zero-dep core promise): importing memorydb must NOT pull in networkx.
+    # A subprocess is required because the test session itself imports networkx (P8-2).
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, "-c", "import sys, memorydb; assert 'networkx' not in sys.modules"],
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+    )
+    assert r.returncode == 0, r.stderr
 
 
 def test_degree_centrality_empty_seeds():
@@ -219,14 +243,19 @@ def test_empty_subgraph_algorithms_are_trivial():
 
 
 @graph
-def test_whole_graph_pagerank_and_ceiling_degrade():
+def test_whole_graph_pagerank_and_ceiling_degrade(caplog):
+    import logging
     store, ids = build()
     # sg=None -> whole-graph PageRank (under the ceiling) ranks the hub on top.
-    pr = GraphView(store).pagerank()
-    assert pr[ids["NotificationService"]] == max(pr.values())
-    # a tiny ceiling forces the cheap degree-centrality degrade (no exception, a warning + degree scores).
-    degraded = GraphView(store, node_ceiling=2).pagerank()
+    true_pr = GraphView(store).pagerank()
+    assert true_pr[ids["NotificationService"]] == max(true_pr.values())
+    # a tiny ceiling forces the cheap degree-centrality degrade: warns, returns degree scores, and the
+    # result must actually DIFFER from true PageRank (proves the degrade fired, not a circular check).
+    with caplog.at_level(logging.WARNING, logger="memorydb.graph"):
+        degraded = GraphView(store, node_ceiling=2).pagerank()
+    assert "exceeds the ceiling" in caplog.text
     assert degraded == pytest.approx(GraphView(store)._global_degree())
+    assert degraded != pytest.approx(true_pr)
     store.close()
 
 
@@ -235,4 +264,179 @@ def test_global_graph_raises_above_ceiling():
     store, _ = build()
     with pytest.raises(ValueError, match="ceiling"):
         GraphView(store, node_ceiling=2)._global_graph()
+    with pytest.raises(ValueError, match="edges"):
+        GraphView(store, edge_ceiling=2)._global_graph()           # edge guard, not just nodes (P8-5)
     store.close()
+
+
+# --- P8 remediation: regression + coverage gaps --------------------------------------------------------
+
+@graph
+def test_shortest_path_direction_both_and_in():
+    # P8-1 regression: direction must drive BOTH the node set and the search.
+    store = Store(":memory:")
+    for u in ("a", "b", "hub"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("a", "hub", Rel.CALLS)
+    store.upsert_edge("b", "hub", Rel.CALLS)            # a -> hub <- b : no directed a->b path
+    store.commit()
+    a, b, hub = store.id_for("a"), store.id_for("b"), store.id_for("hub")
+    gv = GraphView(store)
+    assert gv.shortest_path(a, b, direction="both") == [a, hub, b]   # undirected path exists
+    assert gv.shortest_path(a, b, direction="out") is None           # no directed a->b
+    # in-direction: a chain x->y->z, in-reachability from z reaches x.
+    store2 = Store(":memory:")
+    for u in ("x", "y", "z"):
+        store2.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store2.upsert_edge("x", "y", Rel.CALLS)
+    store2.upsert_edge("y", "z", Rel.CALLS)
+    store2.commit()
+    x, y, z = store2.id_for("x"), store2.id_for("y"), store2.id_for("z")
+    assert GraphView(store2).shortest_path(z, x, direction="in") == [z, y, x]
+    store.close(); store2.close()
+
+
+@graph
+def test_shortest_path_max_depth_bound_bites():
+    # a -> b -> c -> d ; the bound, not the graph, must cut off a too-deep path (P8-9).
+    store = Store(":memory:")
+    for u in ("a", "b", "c", "d"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    for s, d in (("a", "b"), ("b", "c"), ("c", "d")):
+        store.upsert_edge(s, d, Rel.CALLS)
+    store.commit()
+    a, d = store.id_for("a"), store.id_for("d")
+    gv = GraphView(store)
+    assert gv.shortest_path(a, d, max_depth=2) is None               # d is 3 hops away
+    assert gv.shortest_path(a, d, max_depth=3) == [a, store.id_for("b"), store.id_for("c"), d]
+    store.close()
+
+
+def test_shortest_path_nonexistent_same_node_is_none():
+    # P8-7: the src==dst short-circuit must not report a phantom node as trivially reachable.
+    store, ids = build()
+    gv = GraphView(store)
+    assert gv.shortest_path(999_999, 999_999) is None
+    assert gv.shortest_path(ids["Job"], ids["Job"]) == [ids["Job"]]  # real node -> trivial path
+    store.close()
+
+
+@graph
+def test_global_adjacency_keeps_max_confidence():
+    # P8-9: whole-graph PageRank weights must use the MAX confidence per (src,dst) pair, not first/last.
+    store = Store(":memory:")
+    for u in ("a", "b"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("a", "b", Rel.CALLS, confidence=0.3)
+    store.upsert_edge("a", "b", Rel.IMPORTS, confidence=0.9)         # parallel relation, higher conf
+    store.commit()
+    a, b = store.id_for("a"), store.id_for("b")
+    _, out_adj = GraphView(store)._global_adjacency()
+    assert out_adj[a] == [(b, 0.9)]                                  # max wins, single collapsed edge
+    store.close()
+
+
+@graph
+def test_pagerank_params_determinism_and_alpha():
+    store, ids = build()
+    gv = GraphView(store)
+    sg = gv.subgraph([ids["NotificationService"]], depth=2)
+    hub = ids["NotificationService"]
+    # determinism: identical output across runs (exact equality, the docstring's promise).
+    assert gv.pagerank(sg) == gv.pagerank(sg)
+    # alpha concentrates mass on the structural hub: higher alpha -> higher hub rank.
+    assert gv.pagerank(sg, alpha=0.5)[hub] < gv.pagerank(sg, alpha=0.95)[hub]
+    # max_iter=1 (no convergence) still yields a valid probability distribution.
+    one = gv.pagerank(sg, max_iter=1)
+    assert sum(one.values()) == pytest.approx(1.0)
+    store.close()
+
+
+@graph
+def test_self_loop_through_store_path():
+    # P8-9: a real self-loop edge survives subgraph_edges_by_id, is retained in the DiGraph, and counts +2.
+    store = Store(":memory:")
+    for u in ("a", "b"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("a", "b", Rel.CALLS)
+    store.upsert_edge("a", "a", Rel.CALLS)              # self-loop
+    store.commit()
+    a, b = store.id_for("a"), store.id_for("b")
+    gv = GraphView(store)
+    sg = gv.subgraph([a], depth=1)
+    assert sg.has_edge(a, a)                            # self-loop retained
+    deg = gv.degree_centrality([a], depth=1)
+    # a: out->b (1) + self-loop (2) = 3 ; b: in (1) ; scale 1/(2-1)=1
+    assert deg == {a: 3.0, b: 1.0}
+    store.close()
+
+
+@graph
+def test_pagerank_disconnected_components():
+    # P8-9: two disconnected components; pagerank stays a single distribution summing to 1.
+    store = Store(":memory:")
+    for u in ("p", "q", "r", "s", "t"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("p", "q", Rel.CALLS)                       # component 1
+    store.upsert_edge("r", "s", Rel.CALLS)
+    store.upsert_edge("s", "t", Rel.CALLS)                       # component 2
+    store.commit()
+    g = {u: store.id_for(u) for u in ("p", "q", "r", "s", "t")}
+    pr = GraphView(store).pagerank()
+    assert set(pr) == set(g.values())
+    assert sum(pr.values()) == pytest.approx(1.0)
+    assert pr[g["q"]] > pr[g["p"]]                              # sink accrues rank within its component
+    assert pr[g["t"]] > pr[g["r"]]
+    store.close()
+
+
+@graph
+def test_path_centrality_ceiling_raises():
+    # P8-5: whole-graph betweenness/closeness are O(V*E) -> bounded by the tight path ceiling.
+    store, _ = build()
+    gv = GraphView(store, path_ceiling=2)
+    with pytest.raises(ValueError, match="path-centrality ceiling"):
+        gv.centrality(None, kind="betweenness")
+    with pytest.raises(ValueError, match="path-centrality ceiling"):
+        gv.centrality(None, kind="closeness")
+    store.close()
+
+
+@graph
+def test_pagerank_edge_ceiling_degrades(caplog):
+    import logging
+    store, ids = build()
+    with caplog.at_level(logging.WARNING, logger="memorydb.graph"):
+        degraded = GraphView(store, edge_ceiling=2).pagerank()   # 6 edges > 2 -> degrade
+    assert "edges" in caplog.text
+    assert degraded == pytest.approx(GraphView(store)._global_degree())
+    store.close()
+
+
+@graph
+def test_communities_order_is_deterministic():
+    store, ids = build()
+    gv = GraphView(store)
+    sg = gv.subgraph([ids["NotificationService"]], depth=2)
+    a = gv.communities(sg)
+    b = gv.communities(sg)
+    # list order pinned (largest-first, then sorted members) -> identical across runs.
+    assert [sorted(c) for c in a] == [sorted(c) for c in b]
+    assert [sorted(c) for c in a] == sorted((sorted(c) for c in a), key=lambda c: (-len(c), c))
+    store.close()
+
+
+def test_centrality_scores_keys_are_int_node_ids():
+    # Consumer fit (hybrid-ranker): scores keyed by int node_id on both the nx and fallback paths.
+    store, ids = build()
+    gv = GraphView(store)
+    for scores in (gv.centrality_scores([ids["NotificationService"]], depth=2, prefer="degree"),):
+        assert scores and all(isinstance(k, int) for k in scores)
+        assert set(scores) <= set(ids.values())
+    store.close()
+
+
+def test_degree_centrality_raw_node_id_zero_is_first_class():
+    # P8-9 nit: node id 0 is falsy; ensure it's treated as a real node, not skipped.
+    out = _degree_centrality_raw([0, 1], [(0, 1)])
+    assert out == {0: 1.0, 1: 1.0}
