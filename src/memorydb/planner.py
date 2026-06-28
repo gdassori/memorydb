@@ -171,11 +171,44 @@ class LLMIntentClassifier:
 
 
 class RetrievalPlanner:
-    def __init__(self, store, embedder, index=None, classifier=None) -> None:
+    def __init__(self, store, embedder, index=None, classifier=None, query_cache=None) -> None:
         self.store = store
         self.embedder = embedder
         self.index = index or BruteForceVectorIndex(store)
         self.classifier = classifier or DefaultIntentClassifier()
+        # Query-embedding cache (TD-011): the query->vector map is a pure function of (model, text), so it
+        # is cached to skip re-embedding repeated/paginated queries. Lazily built from the embedder's
+        # model identity; injectable to share one cache across planners using the same model.
+        self._query_cache = query_cache
+
+    def _ensure_query_cache(self):
+        model = getattr(self.embedder, "model", None) or type(self.embedder).__name__
+        dim = getattr(self.embedder, "dim", None)
+        if self._query_cache is None:
+            from .query_cache import QueryEmbeddingCache
+            self._query_cache = QueryEmbeddingCache(model, dim)
+        else:
+            # An injected/shared cache may have been tagged for a different model/dim — reconcile (clear
+            # on mismatch) so explain() never serves a cross-model/wrong-dim query vector (TD-011 T11-1).
+            self._query_cache.reconcile(model, dim)
+        return self._query_cache
+
+    @property
+    def query_cache(self):
+        return self._ensure_query_cache()
+
+    def clear_query_cache(self) -> None:
+        if self._query_cache is not None:
+            self._query_cache.clear()
+
+    def _embed_query(self, query: str):
+        cache = self._ensure_query_cache()
+        hit = cache.get(query)
+        if hit is not None:
+            return hit
+        vec = self.embedder.embed([query])[0]
+        cache.put(query, vec)
+        return vec
 
     def retrieve(self, query: str, k: int = 5, depth: int = 2) -> dict:
         # A rich classifier (LLM router) exposes analyze() -> IntentResult with symbol/filters; the
@@ -234,7 +267,7 @@ class RetrievalPlanner:
         }
 
     def explain(self, query: str, k: int = 5, depth: int = 2) -> dict:
-        qvec = self.embedder.embed([query])[0]
+        qvec = self._embed_query(query)   # cached by (model, query) — skips re-embedding (TD-011)
         # Drop seeds with no feature overlap (cosine ~0): a query that matches nothing should seed on
         # nothing, not on arbitrary near-orthogonal vectors (R6-22).
         seeds = [node_id for score, node_id in self.index.search(qvec, k=k) if score > 1e-9]

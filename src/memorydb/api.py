@@ -52,7 +52,7 @@ class MemoryDB:
     / ``context`` cover the common flows. Every port (embedder, extractors, classifier, vector index)
     is injectable, and :attr:`store` / :attr:`planner` are escape hatches to the raw substrate."""
 
-    def __init__(self, store, embedder, extractors, classifier, vector_index) -> None:
+    def __init__(self, store, embedder, extractors, classifier, vector_index, query_cache=None) -> None:
         self._store = store
         self._embedder = embedder
         self._extractors = list(extractors)
@@ -62,14 +62,15 @@ class MemoryDB:
         # happens in exactly one place (avoids a double pass — the spec's index() step 2).
         self._indexer = Indexer(store, self._extractors, embedder=None, ignore=IgnoreMatcher())
         store.attach_index(vector_index)   # set_embedding keeps the (vec0) index in sync (sqlite-vec-acceleration)
-        self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier)
+        self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier,
+                                         query_cache=query_cache)
         self._builder = ContextBuilder()
         self._closed = False
 
     # --- construction ------------------------------------------------------
     @classmethod
     def open(cls, path: str = ":memory:", *, embedder=None, extractors=None,
-             classifier=None, vector_index=None) -> "MemoryDB":
+             classifier=None, vector_index=None, query_cache=None) -> "MemoryDB":
         """Open (or create) a MemoryDB at ``path`` with sane, overridable defaults.
 
         Defaults: ``HashingEmbedder`` (offline, NOT semantic-quality — pass a real model for
@@ -90,7 +91,7 @@ class MemoryDB:
             classifier = DefaultIntentClassifier()
         if vector_index is None:
             vector_index = make_vector_index(store)
-        db = cls(store, embedder, extractors, classifier, vector_index)
+        db = cls(store, embedder, extractors, classifier, vector_index, query_cache=query_cache)
         db._check_embedder_compat()
         return db
 
@@ -149,6 +150,25 @@ class MemoryDB:
         self._ensure_open()
         idx = getattr(self._planner, "index", None)
         return idx.rebuild_index() if hasattr(idx, "rebuild_index") else 0
+
+    # --- query-embedding cache (TD-011) ------------------------------------
+    def clear_query_cache(self) -> None:
+        """Empty the in-memory query-embedding cache (e.g. after switching models or to free memory)."""
+        self._ensure_open()
+        self._planner.clear_query_cache()
+
+    def dump_query_cache(self, path: str) -> int:
+        """Flush the query-embedding cache to a compact, model-validated binary file at ``path`` (a hot-
+        query accelerator — disposable, safe to delete). Returns the record count. The caller chooses the
+        location (e.g. a model-keyed cache file shared across DBs, or a db sidecar — TD-011)."""
+        self._ensure_open()
+        return self._planner.query_cache.dump(path)
+
+    def load_query_cache(self, path: str) -> int:
+        """Warm the query-embedding cache from a dump at ``path`` — model-validated, so a missing/corrupt/
+        wrong-model file is ignored (returns 0). Returns the records loaded."""
+        self._ensure_open()
+        return self._planner.query_cache.load(path)
 
     # --- retrieval ---------------------------------------------------------
     def ask(self, query: str, *, k: int = 5, depth: int = 2, as_context: bool = False,
