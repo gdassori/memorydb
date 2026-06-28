@@ -182,3 +182,54 @@ capture the warning. **Fix:** add the above; they're all cheap and several are z
 Fix-now (small, self-contained): **P8-1** (the real bug) + its tests from **P8-9**, **P8-2**, **P8-7**.
 Fix-with-the-ranker (shape the consumer surface before building on it): **P8-3**, **P8-4**, **P8-5**, **P8-6**.
 Doc-only: **P8-8** + the scale/determinism notes.
+
+---
+
+# Re-review (round 2) — 2026-06-28 (remediation `54d3046..6f73b45`)
+
+3 lenses (new control-flow · query+facade integration · test-quality) hunting **regressions introduced by the
+P8 remediation**. Two lenses empirically verified by dropping the new tests onto the pre-remediation source and
+running them (so "fails-on-buggy / passes-on-fixed" is measured, not argued).
+
+> **Verdict:** the remediation **code is regression-free**. The P8-1 `shortest_path` direction fix is correct
+> end-to-end for `out`/`in`/`both` (independent `nx.reverse`/`to_undirected` oracle agrees; `NodeNotFound` can't
+> escape — `dst not in sg` pre-filters and views share the node set); the ceilings are correct at the boundaries
+> (strict `>`, the `sg`-given path runs zero `COUNT(*)`); `subgraph_edges_by_id` is behavior-preserving vs the old
+> uid path (identical edge sets) and the dropped `None`-guard is provably dead; the facade wiring is safe (no
+> circular import, lazy-networkx intact, injection used-not-overwritten). The real defects are in the
+> remediation's **own tests** — including, ironically, the P8-6 determinism fix being tested *vacuously*. All
+> fixed in this round.
+
+### R2-1 — Medium/test — `test_communities_order_is_deterministic` was vacuous → **fixed**
+The `build()` fixture's depth-2 subgraph is a single community, so the ordering assertion was trivially satisfied
+and *passed on the pre-sort code*. Replaced with two disconnected cliques (4 + 3) asserting the exact ordered list
+`[[big], [small]]` — now fails on unsorted NetworkX order.
+
+### R2-2 — Medium/test — `centrality_scores` PageRank branch had no result coverage → **fixed**
+Both call sites avoided the primary path (one forced `prefer="degree"`, one ran under the absent-nx monkeypatch),
+so the one-call hybrid-ranker entry never had its PageRank output validated. Added a test asserting
+`centrality_scores([hub]) == pagerank(subgraph([hub]))`, ranks the hub top, and *differs* from the degree fallback.
+
+### R2-3 — Medium/test — `MemoryDB.graph_view` facade entirely untested → **fixed**
+Added `test_api.py` coverage: lazy build over `db.store`, instance caching, `RuntimeError` after `close()`, and an
+injected `graph_view=` returned as-is (not overwritten).
+
+### R2-4 — Low/robustness — `centrality_scores` swallowed *any* `ImportError` → **fixed**
+The `try: subgraph(...) except ImportError: degree` caught every ImportError, so an *unrelated* broken import in
+the subgraph/query path would be silently misread as "extra absent" (the same anti-pattern P8-2 criticised).
+Replaced with a non-raising `_networkx_available()` probe; unrelated ImportErrors now propagate (new regression
+test). Also `prefer` is now `.lower()`-folded and validated (`ValueError` on unknown), matching `centrality`'s
+`kind`. Defensive: `MemoryDB.__init__` now sets `self._closed = False` first (N2 — so any property reading it is
+well-defined regardless of attribute order).
+
+### R2-5 — Low/test — remediation code paths with no coverage → **fixed**
+Added tests for: the nx-DiGraph max-confidence collapse in `_add_or_max_edge` (only the SQL path was covered); a
+successful whole-graph `_global_graph` build via `centrality(None, kind="betweenness")` (exercising the P8-6
+`ORDER BY` build body + run-to-run determinism); and `query.subgraph_edges_by_id` directly (integer endpoints,
+empty guard, out-of-set endpoint excluded).
+
+### Confirmed regression-free (no fix needed)
+PageRank/degree numerics; the `in`/`both` direction semantics; ceiling boundaries; the shared `_subgraph_ids`
+TEMP-table (single-population per call, no interleave); facade import graph + lazy-networkx; injection threading.
+**Suite after round 2: 259 green** (was 251). Benign non-findings: row-order differs between `subgraph_edges`
+(uid-ordered) and `subgraph_edges_by_id` (id-ordered) — harmless, consumers are order-insensitive.

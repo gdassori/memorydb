@@ -31,6 +31,16 @@ _GLOBAL_EDGE_CEILING = 250_000
 _PATH_CENTRALITY_CEILING = 2_000
 
 
+def _networkx_available() -> bool:
+    """Whether the optional ``[graph]`` extra is importable — a non-raising probe so callers can *degrade*
+    (e.g. ``centrality_scores``) without catching/masking unrelated ImportErrors."""
+    try:
+        import networkx  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _require_networkx():
     """Import NetworkX lazily, raising a clear, actionable ImportError if the ``[graph]`` extra is absent."""
     try:
@@ -239,13 +249,14 @@ class GraphView:
         internally** (like ``make_vector_index``): real PageRank over the built subgraph when the ``[graph]``
         extra is present, else the zero-dep degree-centrality fallback — so callers never branch on the
         extra. ``prefer='degree'`` forces the zero-dep path even when NetworkX is installed."""
-        if prefer == "degree":
+        prefer = prefer.lower()
+        if prefer not in ("pagerank", "degree"):
+            raise ValueError(f"unknown prefer: {prefer!r} (pagerank|degree)")
+        # Probe (don't catch) so a genuine missing extra degrades, but an *unrelated* ImportError raised
+        # inside subgraph/query still propagates instead of being silently misread as "extra absent" (R2-4).
+        if prefer == "degree" or not _networkx_available():
             return self.degree_centrality(seed_ids, depth, relations, direction)
-        try:
-            sg = self.subgraph(seed_ids, depth, relations, direction)
-        except ImportError:
-            return self.degree_centrality(seed_ids, depth, relations, direction)
-        return self.pagerank(sg)
+        return self.pagerank(self.subgraph(seed_ids, depth, relations, direction))
 
     def degree_centrality(self, seed_ids, depth: int = 2, relations=None,
                           direction: str = "both") -> dict[int, float]:

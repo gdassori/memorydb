@@ -55,6 +55,7 @@ class MemoryDB:
 
     def __init__(self, store, embedder, extractors, classifier, vector_index, query_cache=None,
                  graph_view=None) -> None:
+        self._closed = False            # set first so any property reading it during init is well-defined
         self._store = store
         self._graph_view = graph_view   # lazily built on first access if not injected (TD-003 / graph spec)
         self._embedder = embedder
@@ -68,7 +69,6 @@ class MemoryDB:
         self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier,
                                          query_cache=query_cache)
         self._builder = ContextBuilder()
-        self._closed = False
 
     # --- construction ------------------------------------------------------
     @classmethod

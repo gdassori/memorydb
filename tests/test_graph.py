@@ -105,9 +105,11 @@ def test_require_networkx_real_path_raises_actionable_error(monkeypatch):
 
 def test_networkx_absent_gates_only_the_nx_methods(monkeypatch):
     # Simulate the [graph] extra missing: nx methods raise a clear ImportError; degree stays zero-dep.
+    # Patch BOTH the raiser and the probe so centrality_scores degrades via the probe, not a swallowed error.
     def boom():
         raise ImportError("no networkx")
     monkeypatch.setattr(G, "_require_networkx", boom)
+    monkeypatch.setattr(G, "_networkx_available", lambda: False)
     store, ids = build()
     gv = GraphView(store)
     with pytest.raises(ImportError):
@@ -415,14 +417,108 @@ def test_pagerank_edge_ceiling_degrades(caplog):
 
 @graph
 def test_communities_order_is_deterministic():
+    # P8-6 / R2-1: needs >=2 communities of DIFFERENT sizes to actually exercise the (-len, members) sort
+    # (the single-community fixture made this assertion vacuous). Two disconnected cliques: 4 + 3.
+    import itertools
+    store = Store(":memory:")
+    members = {"big": ["p", "q", "r", "s"], "small": ["a", "b", "c"]}
+    for group in members.values():
+        for u in group:
+            store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    for group in members.values():
+        for x, y in itertools.combinations(group, 2):     # fully-connected, both directions
+            store.upsert_edge(x, y, Rel.CALLS)
+            store.upsert_edge(y, x, Rel.CALLS)
+    store.commit()
+    ids = {u: store.id_for(u) for u in members["big"] + members["small"]}
+    gv = GraphView(store)
+    sg = gv.subgraph(list(ids.values()), depth=3)
+    comms = gv.communities(sg)
+    big = sorted(ids[u] for u in members["big"])
+    small = sorted(ids[u] for u in members["small"])
+    # exact, ordered: largest community first, then by sorted members (would FAIL on unsorted nx order).
+    assert [sorted(c) for c in comms] == [big, small]
+    assert gv.communities(sg) == comms                    # identical across runs
+    store.close()
+
+
+@graph
+def test_centrality_scores_uses_pagerank_when_available():
+    # R2-2: the primary ranker entry point's PageRank branch must actually run and be validated.
     store, ids = build()
     gv = GraphView(store)
-    sg = gv.subgraph([ids["NotificationService"]], depth=2)
-    a = gv.communities(sg)
-    b = gv.communities(sg)
-    # list order pinned (largest-first, then sorted members) -> identical across runs.
-    assert [sorted(c) for c in a] == [sorted(c) for c in b]
-    assert [sorted(c) for c in a] == sorted((sorted(c) for c in a), key=lambda c: (-len(c), c))
+    hub = ids["NotificationService"]
+    scores = gv.centrality_scores([hub], depth=2)          # default prefer=pagerank, networkx present
+    assert scores == pytest.approx(gv.pagerank(gv.subgraph([hub], depth=2)))
+    assert scores[hub] == max(scores.values())
+    # and it is the PageRank signal, not the degree fallback (the two differ on this graph).
+    assert scores != pytest.approx(gv.centrality_scores([hub], depth=2, prefer="degree"))
+    store.close()
+
+
+def test_centrality_scores_prefer_validation_and_case():
+    # R2-4: prefer is validated + case-insensitive (mirrors centrality's kind.lower()); both paths zero-dep.
+    store, ids = build()
+    gv = GraphView(store)
+    with pytest.raises(ValueError, match="prefer"):
+        gv.centrality_scores([ids["Job"]], prefer="bogus")
+    assert gv.centrality_scores([ids["NotificationService"]], depth=2, prefer="DEGREE")  # case-folded
+    store.close()
+
+
+def test_centrality_scores_propagates_unrelated_import_error(monkeypatch):
+    # R2-4: with networkx "available", an UNRELATED ImportError inside subgraph must propagate, not be
+    # silently misread as "extra absent" and degraded to the fallback.
+    monkeypatch.setattr(G, "_networkx_available", lambda: True)
+    store, ids = build()
+    gv = GraphView(store)
+    monkeypatch.setattr(gv, "subgraph", lambda *a, **k: (_ for _ in ()).throw(ImportError("unrelated foo")))
+    with pytest.raises(ImportError, match="unrelated"):
+        gv.centrality_scores([ids["Job"]], depth=2)
+    store.close()
+
+
+@graph
+def test_subgraph_collapses_parallel_relations_by_max_conf():
+    # R2-5: the nx-DiGraph max-collapse branch of _add_or_max_edge (only the SQL path was covered).
+    store = Store(":memory:")
+    for u in ("a", "b"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("a", "b", Rel.CALLS, confidence=0.3)
+    store.upsert_edge("a", "b", Rel.IMPORTS, confidence=0.9)
+    store.commit()
+    a, b = store.id_for("a"), store.id_for("b")
+    sg = GraphView(store).subgraph([a], depth=1)
+    assert sg[a][b]["weight"] == pytest.approx(0.9)        # max confidence wins
+    assert sg[a][b]["relation"] == Rel.IMPORTS
+    store.close()
+
+
+@graph
+def test_whole_graph_build_betweenness_and_determinism():
+    # R2-5: _global_graph successful build body (incl. P8-6 ORDER BY) runs to completion + is deterministic.
+    store, ids = build()
+    gv = GraphView(store)                                  # 7 nodes < path_ceiling
+    cen = gv.centrality(None, kind="betweenness")          # builds the whole graph, runs Brandes
+    assert cen[ids["NotificationService"]] == max(cen.values())
+    assert gv.centrality(None, kind="betweenness") == cen  # identical across runs (ORDER BY pins it)
+    store.close()
+
+
+def test_subgraph_edges_by_id_integer_endpoints_and_filtering():
+    # R2-5: the P8-3 by-id reader directly — integer endpoints, empty guard, out-of-set endpoint excluded.
+    from memorydb import query as Q
+    store = Store(":memory:")
+    for u in ("a", "b", "c"):
+        store.upsert_node(Node(uid=u, type="function", name=u, body=u))
+    store.upsert_edge("a", "b", Rel.CALLS)
+    store.upsert_edge("b", "c", Rel.CALLS)                 # c excluded from the id set -> edge dropped
+    store.commit()
+    a, b = store.id_for("a"), store.id_for("b")
+    assert Q.subgraph_edges_by_id(store, []) == []
+    rows = Q.subgraph_edges_by_id(store, [a, b])
+    assert rows == [{"src": a, "dst": b, "relation": "CALLS", "confidence": 1.0}]
+    assert all(isinstance(r["src"], int) and isinstance(r["dst"], int) for r in rows)
     store.close()
 
 

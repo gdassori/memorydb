@@ -164,6 +164,12 @@ all confirmed findings remediated in [`graph.py`](../../../src/memorydb/graph.py
   components, the path/edge ceilings, int-key consumer fit, and node id `0`; the circular degrade assertion now
   also asserts the warning fired and that the degrade differs from true PageRank.
 
+A second **re-review round** (regression hunt on the remediation, see the doc's "Re-review (round 2)") confirmed
+the code regression-free and closed test gaps it surfaced (R2-1..R2-5): a *vacuous* communities-determinism test
+(single-community fixture) replaced with a two-clique one; result-level coverage for `centrality_scores`' PageRank
+branch and the `MemoryDB.graph_view` facade; `centrality_scores` now probes `_networkx_available()` instead of
+swallowing every `ImportError`, and validates/case-folds `prefer`. Suite: 259 green.
+
 ## References
 
 - [TD-003](../../decisions/TD-003-sqlite-single-store-recursive-cte.md)
