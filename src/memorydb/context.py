@@ -134,7 +134,15 @@ class ContextBuilder:
                     + _W_DEPTH * (1.0 / (1.0 + d))
                     + _W_CONF * conf.get(n["uid"], 0.0))
 
-        ordered = sorted(nodes, key=lambda n: (-rank(n), n["uid"]))[: self.max_cards]
+        # The hybrid ranker's order (vector+centrality+confidence+recency) supersedes the seed/depth proxy
+        # when the planner supplies it (hybrid-ranker spec); position 0 = best, unranked nodes sink, uid
+        # tie-break for determinism. Absent (LOCATE, or a degraded EXPLAIN) → the proxy above.
+        hybrid = result.get("ranking")
+        if hybrid:
+            pos = {nid: i for i, nid in enumerate(hybrid)}
+            ordered = sorted(nodes, key=lambda n: (pos.get(n["id"], len(pos)), n["uid"]))[: self.max_cards]
+        else:
+            ordered = sorted(nodes, key=lambda n: (-rank(n), n["uid"]))[: self.max_cards]
         dropped = len(nodes) - len(ordered)
 
         effective = int(budget * _SAFETY)

@@ -3,7 +3,7 @@
 5 finder lenses (algorithm/math · edge-cases · API/spec/consumer · test-quality · perf/SQL) → dedup → self-verified
 the headline finding end-to-end. Scope: the new `src/memorydb/graph.py` (`GraphView`) + `tests/test_graph.py` +
 the `__init__` export + spec, against `query.py`/`store.py`/`planner.py`/`vector.py` conventions and the
-[hybrid-ranker](active/hybrid-ranker.md) consumer contract.
+[hybrid-ranker](completed/hybrid-ranker.md) consumer contract.
 
 > **Verdict:** the core numerics are *correct* — `_pagerank_power` matches a NetworkX-style power-iteration
 > reference bit-for-bit across dangling/self-loop/all-dangling cases (sums to 1), and `_degree_centrality_raw`

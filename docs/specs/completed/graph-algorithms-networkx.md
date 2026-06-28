@@ -18,7 +18,7 @@ components: [query, graph]
 
 `GraphView(store).subgraph(seed_ids, depth).pagerank()` (and centrality/paths) returns scores keyed by
 `node_id`, computed over a bounded subgraph pulled from the edges table. Done = ranking signals for the hybrid
-ranker ([hybrid-ranker.md](../active/hybrid-ranker.md)) come from real graph structure, computed lazily and cheaply.
+ranker ([hybrid-ranker.md](hybrid-ranker.md)) come from real graph structure, computed lazily and cheaply.
 
 ## Background & constraints
 
@@ -173,5 +173,5 @@ swallowing every `ImportError`, and validates/case-folds `prefer`. Suite: 259 gr
 ## References
 
 - [TD-003](../../decisions/TD-003-sqlite-single-store-recursive-cte.md)
-- [hybrid-ranker.md](../active/hybrid-ranker.md), [v0-substrate.md](../active/v0-substrate.md)
+- [hybrid-ranker.md](hybrid-ranker.md), [v0-substrate.md](../active/v0-substrate.md)
 - NetworkX (DiGraph, pagerank, centrality).

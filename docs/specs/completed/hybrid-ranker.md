@@ -1,7 +1,8 @@
 ---
 title: "Hybrid ranker — fuse vector, graph, confidence & recency"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-28
 author: claude
 related_tds: [TD-006, TD-007]
 components: [planner, query, graph]
@@ -63,7 +64,7 @@ exponential decay above. `breakdown` keeps each term for debugging and the eval 
 
 1. Gather candidates (seeds + traversal expansion from the planner).
 2. `cos_sim`: from the vector index scores (or compute against `query_vec`).
-3. `centrality`: `GraphView(store).pagerank(subgraph)` ([graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md));
+3. `centrality`: `GraphView(store).pagerank(subgraph)` ([graph-algorithms-networkx.md](graph-algorithms-networkx.md));
    fallback to degree centrality if `[graph]` absent.
 4. `confidence`: mean confidence of edges incident to the node.
 5. `recency`: from the owning `file` node's `attrs.mtime`.
@@ -104,16 +105,37 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 
 ## Tasks
 
-- [ ] signal extractors (cosine, centrality, confidence, recency) with normalization
-- [ ] weighted fusion + `breakdown` + deterministic sort
-- [ ] degree-centrality fallback when `[graph]` is absent
-- [ ] planner integration in `_explain`
-- [ ] zero-dep tests (hub / recency / breakdown / missing-signals / determinism)
+- [x] signal extractors (cosine, centrality, confidence, recency) with normalization
+- [x] weighted fusion + `breakdown` + deterministic sort
+- [x] degree-centrality fallback when `[graph]` is absent
+- [x] planner integration in `_explain`
+- [x] zero-dep tests (hub / recency / breakdown / missing-signals / determinism)
+
+## Implementation notes (2026-06-28)
+
+Landed as [`src/memorydb/ranker.py`](../../../src/memorydb/ranker.py) (`HybridRanker`, `RankWeights`,
+`Scored`), tested by [`tests/test_ranker.py`](../../../tests/test_ranker.py) (14 cases; zero-dep + one
+`[graph]`-gated PageRank-path test).
+
+- **Centrality** comes from [`GraphView.centrality_scores(ids, depth)`](graph-algorithms-networkx.md) — real
+  PageRank when `[graph]` is present, degree fallback otherwise — so the ranker never branches on the extra and
+  stays zero-dep. Tests force the degree path (`_networkx_available → False`) to be env-independent.
+- **`breakdown` holds the *weighted* contributions** (so `score == sum(breakdown.values())` exactly) — the
+  explainability contract. `RankWeights` normalizes to sum 1 at construction (warns) and rejects a non-positive sum.
+- **Cosine** is each candidate's stored unit-embedding dotted with the normalized query, clamped to `[0,1]`
+  (a negative/orthogonal cosine, like a missing embedding, contributes 0 — consistent with the spec's "no
+  embedding → 0"). Only same-dim vectors are scored (mirrors `BruteForceVectorIndex`).
+- **Recency** reads the symbol's denormalized `attrs.mtime` else the owning file node's mtime via the indexed
+  `file_uid` (C5), with `now` injectable so scoring is reproducible; unknown mtime → neutral 0.5.
+- **Integration:** `RetrievalPlanner.explain` attaches `ranking` (ordered node_ids) + `scored` (breakdowns)
+  **additively** — a ranker hiccup degrades to the unranked result, and the `ContextBuilder` prefers `ranking`
+  when present (else its seed/depth proxy). LOCATE/FILTER are exact and bypass the ranker (TD-007). The planner
+  and `MemoryDB` accept an injectable `graph_view`/`ranker` (else built lazily over the store).
 
 ## Open questions
 
 - **Learn the weights** from eval data vs hand-tuned defaults? **Lean** hand-tuned for v1; expose them so the
-  eval harness ([eval-harness.md](../completed/eval-harness.md)) can grid-search later.
+  eval harness ([eval-harness.md](eval-harness.md)) can grid-search later.
 - **Per-intent weights** (LOCATE vs EXPLAIN)? **Lean** EXPLAIN uses the full fusion; LOCATE bypasses the ranker
   (it is exact, [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)).
 
@@ -133,4 +155,4 @@ sub-ms on a depth-2 subgraph. Weights/half-life are constants (tunable via the e
 ## References
 
 - [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md), [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md)
-- [graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md), [context-builder-packing.md](../completed/context-builder-packing.md), [eval-harness.md](../completed/eval-harness.md)
+- [graph-algorithms-networkx.md](graph-algorithms-networkx.md), [context-builder-packing.md](context-builder-packing.md), [eval-harness.md](eval-harness.md)

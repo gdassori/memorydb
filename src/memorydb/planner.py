@@ -171,7 +171,8 @@ class LLMIntentClassifier:
 
 
 class RetrievalPlanner:
-    def __init__(self, store, embedder, index=None, classifier=None, query_cache=None) -> None:
+    def __init__(self, store, embedder, index=None, classifier=None, query_cache=None,
+                 graph_view=None, ranker=None) -> None:
         self.store = store
         self.embedder = embedder
         self.index = index or BruteForceVectorIndex(store)
@@ -180,6 +181,11 @@ class RetrievalPlanner:
         # is cached to skip re-embedding repeated/paginated queries. Lazily built from the embedder's
         # model identity; injectable to share one cache across planners using the same model.
         self._query_cache = query_cache
+        # Hybrid ranker (hybrid-ranker spec): lazily built over the store + an optional shared GraphView;
+        # injectable so a caller can tune weights/half-life. EXPLAIN fuses signals through it; LOCATE/FILTER
+        # are exact and bypass it (TD-007).
+        self._graph_view = graph_view
+        self._ranker = ranker
 
     def _ensure_query_cache(self):
         model = getattr(self.embedder, "model", None) or type(self.embedder).__name__
@@ -266,6 +272,12 @@ class RetrievalPlanner:
             "by_target": by_target,
         }
 
+    def _hybrid_ranker(self):
+        if self._ranker is None:
+            from .ranker import HybridRanker
+            self._ranker = HybridRanker(self.store, graph_view=self._graph_view)
+        return self._ranker
+
     def explain(self, query: str, k: int = 5, depth: int = 2) -> dict:
         qvec = self._embed_query(query)   # cached by (model, query) — skips re-embedding (TD-011)
         # Drop seeds with no feature overlap (cosine ~0): a query that matches nothing should seed on
@@ -273,13 +285,26 @@ class RetrievalPlanner:
         seeds = [node_id for score, node_id in self.index.search(qvec, k=k) if score > 1e-9]
         reached = Q.traverse(self.store, seeds, max_depth=depth, direction="both")
         ids = [r["id"] for r in reached]
-        return {
+        result = {
             "intent": "EXPLAIN",
             "seeds": seeds,
             "depths": {r["id"]: r["depth"] for r in reached},   # for the context builder's ranking
             "nodes": self.store.get_nodes(ids),
             "edges": Q.subgraph_edges(self.store, ids),
         }
+        # Hybrid ranking over the expanded candidate set (hybrid-ranker spec): fuse vector+centrality+
+        # confidence+recency into one order. Additive — consumers that ignore "ranking"/"scored" are
+        # unaffected; the context builder prefers "ranking" when present. A ranker hiccup must never break
+        # retrieval, so it degrades to the unranked result (the context builder's seed/depth proxy).
+        if ids:
+            try:
+                scored = self._hybrid_ranker().rank(ids, qvec, depth=depth)
+                result["ranking"] = [s.node_id for s in scored]
+                result["scored"] = [{"node_id": s.node_id, "score": s.score, "breakdown": s.breakdown}
+                                    for s in scored]
+            except Exception:   # noqa: BLE001 - ranking is a refinement, never a hard dependency
+                _LOG.debug("hybrid ranking failed; returning unranked EXPLAIN result", exc_info=True)
+        return result
 
     def _filter(self, result: "IntentResult", k: int = 5) -> dict:
         """FILTER: an allowlisted, parameterized SQL query over symbol attributes (no injection — every
