@@ -157,6 +157,31 @@ def test_embedder_change_warns():
     assert "embedder changed" in msgs and "dim changed" in msgs
 
 
+def test_graph_view_facade_lazy_and_cached():
+    # R2-3: the graph_view escape hatch — lazy build over db.store, cached, and closed-safe.
+    from memorydb import GraphView
+    db = _open()
+    gv = db.graph_view
+    assert isinstance(gv, GraphView)
+    assert gv.store is db.store          # built over the facade's own store
+    assert db.graph_view is gv           # cached: same instance across accesses
+    db.close()
+    try:
+        _ = db.graph_view
+        assert False, "expected RuntimeError after close()"
+    except RuntimeError:
+        pass
+
+
+def test_graph_view_injection_is_used_not_overwritten():
+    # R2-3: an injected graph_view= is returned as-is (not replaced by a lazily-built default).
+    from memorydb import GraphView, Store
+    custom = GraphView(Store(":memory:"), node_ceiling=123)
+    db = _open(graph_view=custom)
+    assert db.graph_view is custom and db.graph_view.node_ceiling == 123
+    db.close()
+
+
 def test_use_after_close():
     db = _open()
     db.close()

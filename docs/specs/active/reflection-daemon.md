@@ -24,7 +24,7 @@ memory → decay/prune → re-embed dirty. Done = after many `cycle()`s over a g
 
 This composes existing pieces — concept extraction ([concept-ontology-layer.md](concept-ontology-layer.md)),
 temporal/confidence ([temporal-confidence-machinery.md](temporal-confidence-machinery.md)), graph algorithms
-([graph-algorithms-networkx.md](graph-algorithms-networkx.md)), embeddings ([TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md))
+([graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md)), embeddings ([TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md))
 — into a scheduled loop. It must be **idempotent**, **incremental** (only reflect on what changed since the last
 cycle), and **safe** (never destroy load-bearing data; concepts are a rebuildable layer).
 
@@ -127,4 +127,4 @@ indexer's delete pass rather than inferring them from id gaps.
 ## References
 
 - [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)
-- [concept-ontology-layer.md](concept-ontology-layer.md), [temporal-confidence-machinery.md](temporal-confidence-machinery.md), [graph-algorithms-networkx.md](graph-algorithms-networkx.md)
+- [concept-ontology-layer.md](concept-ontology-layer.md), [temporal-confidence-machinery.md](temporal-confidence-machinery.md), [graph-algorithms-networkx.md](../completed/graph-algorithms-networkx.md)
