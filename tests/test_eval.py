@@ -25,6 +25,23 @@ def _close(a, b):
     return abs(a - b) <= APPROX
 
 
+# --- P9-5: the harness ranks EXPLAIN by the hybrid ranker, not its own proxy ---
+def test_explain_ranking_prefers_hybrid_ranking():
+    nodes = [{"id": 1, "uid": "a"}, {"id": 2, "uid": "b"}, {"id": 3, "uid": "c"}]
+    # ranking (c, a, b) differs from both seed-order and uid-order, so it can't pass by coincidence.
+    ranked = Evaluator._explain_ranking({"intent": "EXPLAIN", "nodes": nodes, "seeds": [1], "ranking": [3, 1, 2]})
+    assert ranked == ["c", "a", "b"]                       # follows result["ranking"], not the proxy
+    # a ranking id missing from `nodes` is skipped; a node missing from `ranking` is appended uid-sorted.
+    partial = Evaluator._explain_ranking({"intent": "EXPLAIN", "nodes": nodes, "seeds": [], "ranking": [3, 99]})
+    assert partial == ["c", "a", "b"]                      # c (ranked), then {a,b} uid-sorted
+
+
+def test_explain_ranking_falls_back_without_ranking():
+    nodes = [{"id": 1, "uid": "a"}, {"id": 2, "uid": "b"}, {"id": 3, "uid": "c"}]
+    # no `ranking` key -> seed-first, then uid-sorted remainder (unchanged proxy).
+    assert Evaluator._explain_ranking({"intent": "EXPLAIN", "nodes": nodes, "seeds": [2]}) == ["b", "a", "c"]
+
+
 # --- pure metric math ------------------------------------------------------
 def test_metrics_math():
     returned, expected = ["a", "b", "c"], ["a", "c", "d"]

@@ -112,3 +112,50 @@ builder is intended (the ranker folds confidence in; the builder's `_W_CONF` wou
 Fix-now: **P9-1/2/3** (test integrity) + **P9-8/9** (robustness) — small, self-contained.
 Wire the loop: **P9-4** (facade→planner share) + **P9-5** (eval prefers ranking) + **P9-6** (reproducible `now`).
 Consistency/doc: **P9-7** (pydantic) + **P9-13** (coverage) + **P9-14** (spec table). Accept P9-10/11/12 with notes.
+
+---
+
+# Re-review (round 2) — 2026-06-29 (remediation `3baefbd..b3d1047`)
+
+3 lenses (pydantic+ranker robustness · integration · test-quality) hunting **regressions introduced by the P9
+remediation**; all three verified empirically (the test lens mutation-tested in an isolated worktree).
+
+> **Verdict:** the remediation is sound — pydantic conversion (after-validator mutation persists, no re-normalize
+> loop, `ge=0` rejects negatives, `Scored.model_dump()` round-trips, fresh `breakdown` per instance), the
+> facade↔planner GraphView sharing (`db.graph_view IS the ranker's`, lazy-networkx intact, injection end-to-end),
+> the eval prefer-ranking branch, the defensive mtime, half-life-at-use, and self-loop fix are all correct and
+> regression-free; the rewritten P9-1/2/3 tests and the P9-13 tests each fail on their targeted mutation (no
+> tautologies). **One latent regression** slipped in with P9-6, plus a few coverage/assertion gaps — all fixed.
+
+### RR-1 — Medium/correctness — `_default_now` `MAX(json_extract(...))` is poisoned by a string mtime on a mixed-type corpus → **fixed**
+The P9-6 reproducibility fix used `MAX(json_extract(attrs,'$.mtime'))`. SQLite storage-class ordering is
+`NULL < REAL < TEXT`, so **any** TEXT mtime outranks **every** numeric one regardless of magnitude — `MAX` returns
+the string, `now` is poisoned, and (because `age = max(0, now-mtime)` then clamps every real-mtime node to age 0)
+the recency signal **collapses to a constant**. Reproduced directly: numeric `3000.0` vs string `'2000'` →
+`MAX` returns `'2000'`. The all-float indexer path is fine; `attrs` is repo/adapter-controlled and `filters.py`
+explicitly contemplates string mtimes, so the mixed case is reachable. **Fix:** `MAX(CAST(json_extract(...) AS
+REAL))` (mirrors `filters.py` numeric coercion) — verified to return `3000.0`. New regression test
+`test_default_now_compares_mtimes_numerically`.
+
+### RR-2 — Nit/perf — `_default_now` is a full `nodes` scan per no-`now` `rank()` (~7ms/30k) → **noted**
+One extra unindexed scan per production EXPLAIN (vs the old O(1) `time.time()`). Bounded and small relative to the
+cosine/centrality/confidence queries; left as a documented cost (a generated/indexed mtime column is the future
+optimization if it ever shows up in a profile).
+
+### F1 — Medium/test — the reproducibility assertion was a tautology → **fixed**
+`test_default_now_is_corpus_mtime_and_reproducible` ran two `rank()` calls microseconds apart, so the
+"reproducible, not wall-clock-dependent" assertion held even under a wall-clock impl (mutation-confirmed). Now the
+two calls run under **different mocked wall-clocks a year apart** (`monkeypatch time.time`) — identical scores
+prove the clock is the corpus mtime, not `time.time()`.
+
+### F2 / F3 / F4 — Medium-Low/test-coverage — remediation paths shipped without a regression test → **fixed**
+- **F2:** `_default_now`'s no-mtimes → `time.time()` fallback was uncovered → `test_default_now_falls_back_to_wallclock_without_mtimes`.
+- **F3:** the P9-5 eval prefer-`ranking` branch had **zero** coverage (mutation: ignoring `ranking` left all eval
+  tests green) → `test_explain_ranking_prefers_hybrid_ranking` + `_falls_back_without_ranking` (direct unit tests of
+  `Evaluator._explain_ranking`).
+- **F4:** the P9-4 facade↔planner sharing was wired but unasserted → `test_planner_ranker_shares_facade_graph_view`
+  (`db.planner._hybrid_ranker().graph_view is db.graph_view`) + `test_open_injects_ranker_unchanged`.
+
+### Non-blocking
+Stale `graph_view` property docstring ("Lazily built…on first access") now eager + harmless dead `if None` branch
+— **docstring updated**. Suite after round 2: **290 green** (was 284).

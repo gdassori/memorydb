@@ -156,9 +156,11 @@ class HybridRanker:
         return out
 
     def _default_now(self) -> float:
-        """The corpus's newest file mtime (deterministic recency clock), or wall-clock if no mtimes exist."""
+        """The corpus's newest file mtime (deterministic recency clock), or wall-clock if no mtimes exist.
+        ``CAST(... AS REAL)`` so ``MAX`` compares numerically — without it SQLite's storage-class ordering
+        (REAL < TEXT) would let a *string* mtime outrank every numeric one and poison the clock (RR-1)."""
         row = self.store.conn.execute(
-            "SELECT MAX(json_extract(attrs, '$.mtime')) FROM nodes").fetchone()
+            "SELECT MAX(CAST(json_extract(attrs, '$.mtime') AS REAL)) FROM nodes").fetchone()
         if row and row[0] is not None:
             try:
                 return float(row[0])

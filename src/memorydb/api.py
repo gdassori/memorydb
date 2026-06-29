@@ -218,11 +218,11 @@ class MemoryDB:
 
     @property
     def graph_view(self) -> GraphView:
-        """On-demand graph algorithms over the substrate (PageRank/centrality/paths — TD-003). Lazily
-        built over :attr:`store` on first access (or injected via ``open(graph_view=…)``); the hybrid
-        ranker reaches centrality through ``graph_view.centrality_scores(seed_ids)``."""
+        """On-demand graph algorithms over the substrate (PageRank/centrality/paths — TD-003). Built over
+        :attr:`store` in ``__init__`` (or injected via ``open(graph_view=…)``) and **shared** with the
+        planner's hybrid ranker, which reaches centrality through ``graph_view.centrality_scores(seed_ids)``."""
         self._ensure_open()
-        if self._graph_view is None:
+        if self._graph_view is None:                       # defensive: __init__ always sets it
             self._graph_view = GraphView(self._store)
         return self._graph_view
 

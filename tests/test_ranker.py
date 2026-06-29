@@ -338,18 +338,53 @@ def test_dedupe_and_dim_mismatch(force_degree):
     store.close()
 
 
-def test_default_now_is_corpus_mtime_and_reproducible(force_degree):
-    # P9-6: with no `now=`, recency is corpus-relative (newest file -> 1.0) and reproducible across calls.
+def test_default_now_is_corpus_mtime_and_reproducible(force_degree, monkeypatch):
+    # P9-6: with no `now=`, recency is corpus-relative (newest file -> 1.0) and reproducible regardless of
+    # wall-clock. The two calls run under DIFFERENT mocked wall-clocks (a year apart) — identical scores
+    # prove the clock is the corpus mtime, not time.time() (F1: the old same-instant check was a tautology).
     store = Store(":memory:")
     store.upsert_node(Node(uid="f.py", type="file", name="f.py", body="", attrs={"mtime": _NOW}))
     store.upsert_node(Node(uid="n", type="function", name="n", body="b", attrs={"file_uid": "f.py"}))
     store.commit()
     n = store.id_for("n")
     r = HybridRanker(store)
-    a = r.rank([n], [0.0] * 64)        # no now= -> defaults to corpus max mtime (_NOW)
+    monkeypatch.setattr("time.time", lambda: _NOW + 365 * _DAY)
+    a = r.rank([n], [0.0] * 64)        # no now= -> corpus max mtime (_NOW), NOT the mocked wall-clock
+    monkeypatch.setattr("time.time", lambda: _NOW + 999 * _DAY)
     b = r.rank([n], [0.0] * 64)
     assert a[0].breakdown["recency"] == pytest.approx(0.15 * 1.0)   # newest file, age 0 -> recency 1.0
-    assert a[0].score == pytest.approx(b[0].score)                  # reproducible, not wall-clock-dependent
+    assert a[0].score == pytest.approx(b[0].score)                  # wall-clock-independent reproducibility
+    store.close()
+
+
+def test_default_now_compares_mtimes_numerically(force_degree):
+    # RR-1: a STRING mtime must not outrank a larger NUMERIC mtime via SQLite storage-class ordering.
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="new.py", type="file", name="new.py", body="", attrs={"mtime": _NOW}))
+    store.upsert_node(Node(uid="old.py", type="file", name="old.py", body="", attrs={"mtime": str(int(_NOW - 50 * _DAY))}))
+    store.upsert_node(Node(uid="n", type="function", name="n", body="b", attrs={"file_uid": "new.py"}))
+    store.commit()
+    n = store.id_for("n")
+    # now must resolve to the NUMERIC newest (_NOW), not the string '...': n's file is the newest -> recency ~1.0
+    rec = HybridRanker(store).rank([n], [0.0] * 64)[0].breakdown["recency"]
+    assert rec == pytest.approx(0.15 * 1.0)   # would collapse/skew if MAX picked the TEXT mtime
+    store.close()
+
+
+def test_default_now_falls_back_to_wallclock_without_mtimes(force_degree, monkeypatch):
+    # F2: a corpus with no mtimes at all -> now defaults to wall-clock (no crash); the node's own age is 0.
+    store = Store(":memory:")
+    store.upsert_node(Node(uid="n", type="function", name="n", body="b", attrs={"mtime": _NOW}))  # the only mtime
+    store.commit()
+    n = store.id_for("n")
+    monkeypatch.setattr("time.time", lambda: _NOW + 10 * _DAY)   # used only if no corpus mtime
+    rec = HybridRanker(store).rank([n], [0.0] * 64)[0].breakdown["recency"]
+    assert rec == pytest.approx(0.15 * 1.0)                      # corpus mtime present -> age 0
+    # now drop all mtimes -> _default_now must use the mocked wall-clock and not raise
+    store.conn.execute("UPDATE nodes SET attrs = '{}'")
+    store.commit()
+    rec2 = HybridRanker(store).rank([n], [0.0] * 64)[0].breakdown["recency"]
+    assert rec2 == pytest.approx(0.15 * 0.5)                     # no mtime for n -> neutral 0.5, no crash
     store.close()
 
 

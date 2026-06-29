@@ -182,6 +182,29 @@ def test_graph_view_injection_is_used_not_overwritten():
     db.close()
 
 
+def test_planner_ranker_shares_facade_graph_view():
+    # P9-4: the planner's hybrid ranker uses the SAME GraphView the facade exposes (one view per store,
+    # end-to-end — not two independent views).
+    db = _open()
+    assert db.planner._hybrid_ranker().graph_view is db.graph_view
+    db.close()
+    # an injected graph_view is the one the default ranker uses, too.
+    from memorydb import GraphView, Store
+    gv = GraphView(Store(":memory:"), node_ceiling=321)
+    db2 = _open(graph_view=gv)
+    assert db2.planner._hybrid_ranker().graph_view is gv
+    db2.close()
+
+
+def test_open_injects_ranker_unchanged():
+    # P9-4: an injected ranker= is used by the planner, not overwritten by the lazy default.
+    from memorydb import HybridRanker, Store
+    custom = HybridRanker(Store(":memory:"))
+    db = _open(ranker=custom)
+    assert db.planner._hybrid_ranker() is custom
+    db.close()
+
+
 def test_use_after_close():
     db = _open()
     db.close()
