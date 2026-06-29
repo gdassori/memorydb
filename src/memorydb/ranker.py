@@ -12,24 +12,26 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, Field, model_validator
 
 from .vector import normalize, unpack
 
 _LOG = logging.getLogger(__name__)
 
 
-@dataclass
-class RankWeights:
-    """Per-signal weights. Vector stays the largest by default so centrality can't bury a niche-but-correct
-    hit (Risks). Normalized to sum 1 at construction (a misconfigured sum warns rather than silently
-    skewing the fusion)."""
-    vector: float = 0.45
-    centrality: float = 0.25
-    confidence: float = 0.15
-    recency: float = 0.15
+class RankWeights(BaseModel):
+    """Per-signal weights (pydantic, TD-010). Vector stays the largest by default so centrality can't bury a
+    niche-but-correct hit (Risks). Each weight is ``>= 0`` (a negative weight would *penalize* a signal —
+    almost always a bug, so rejected); the set is normalized to sum 1 at construction (a misconfigured sum
+    warns rather than silently skewing the fusion; a non-positive sum raises)."""
+    vector: float = Field(default=0.45, ge=0.0)
+    centrality: float = Field(default=0.25, ge=0.0)
+    confidence: float = Field(default=0.15, ge=0.0)
+    recency: float = Field(default=0.15, ge=0.0)
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _normalize(self) -> "RankWeights":
         total = self.vector + self.centrality + self.confidence + self.recency
         if total <= 0:
             raise ValueError("RankWeights must sum to a positive value")
@@ -39,15 +41,15 @@ class RankWeights:
             self.centrality /= total
             self.confidence /= total
             self.recency /= total
+        return self
 
 
-@dataclass
-class Scored:
-    """One ranked candidate. ``breakdown`` holds the *weighted* per-signal contributions, so
-    ``score == sum(breakdown.values())`` (within float tolerance) — the explainability contract."""
+class Scored(BaseModel):
+    """One ranked candidate (pydantic, TD-010). ``breakdown`` holds the *weighted* per-signal contributions,
+    so ``score == sum(breakdown.values())`` (within float tolerance) — the explainability contract."""
     node_id: int
     score: float
-    breakdown: dict = field(default_factory=dict)
+    breakdown: dict = Field(default_factory=dict)
 
 
 def _minmax(raw: dict, ids: list) -> dict:
@@ -74,8 +76,10 @@ class HybridRanker:
 
     def rank(self, candidate_ids, query_vec, depth: int = 2, *, now: "float | None" = None) -> list[Scored]:
         """Rank ``candidate_ids`` by the weighted fusion; returns :class:`Scored` sorted best-first with a
-        deterministic ``node_id`` tie-break. ``now`` (epoch seconds) pins the recency clock for reproducible
-        scoring; defaults to wall-clock. Each signal is computed once over the whole set, then normalized."""
+        deterministic ``node_id`` tie-break. ``now`` (epoch seconds) pins the recency clock; when omitted it
+        defaults to the corpus's newest mtime — so ranking is *reproducible* (deterministic, corpus-relative:
+        the newest file scores recency 1.0) rather than drifting with wall-clock. Each signal is computed once
+        over the whole set, then normalized."""
         ids = list(dict.fromkeys(int(i) for i in candidate_ids))   # unique, stable order
         if not ids:
             return []
@@ -122,12 +126,14 @@ class HybridRanker:
 
     def _confidences(self, ids: list) -> dict:
         """Mean confidence of edges incident (in OR out) to each candidate — already in [0,1], used raw.
-        A node with no incident edges is absent (→ 0 contribution)."""
+        A node with no incident edges is absent (→ 0 contribution). A self-loop is counted once (the dst arm
+        excludes ``src == dst``), not double (P9-11)."""
         rows = self.store.conn.execute(
             "SELECT id, AVG(conf) AS mc FROM ("
             "  SELECT src AS id, confidence AS conf FROM edges WHERE src IN (SELECT value FROM json_each(:ids)) "
             "  UNION ALL "
-            "  SELECT dst AS id, confidence AS conf FROM edges WHERE dst IN (SELECT value FROM json_each(:ids)) "
+            "  SELECT dst AS id, confidence AS conf FROM edges "
+            "    WHERE dst IN (SELECT value FROM json_each(:ids)) AND src != dst "
             ") GROUP BY id",
             {"ids": json.dumps(ids)},
         ).fetchall()
@@ -135,23 +141,37 @@ class HybridRanker:
 
     def _recencies(self, ids: list, now: "float | None") -> dict:
         """Exponential recency decay ``exp(-age_days / half_life)`` from the owning file's mtime. Unknown
-        mtime → neutral 0.5 (don't penalize unknown age). ``now`` defaults to wall-clock."""
+        mtime → neutral 0.5 (don't penalize unknown age). ``now`` defaults to the corpus's newest mtime
+        (reproducible) — see :meth:`rank`."""
         if now is None:
-            import time
-            now = time.time()
+            now = self._default_now()
+        hl = self.half_life_days if self.half_life_days > 0 else 30.0   # tolerate a post-construction mutation
         out: dict = {}
         for node_id, mtime in self._mtimes(ids).items():
             if mtime is None:
                 out[node_id] = 0.5
             else:
                 age_days = max(0.0, (now - mtime) / 86400.0)
-                out[node_id] = math.exp(-age_days / self.half_life_days)
+                out[node_id] = math.exp(-age_days / hl)
         return out
+
+    def _default_now(self) -> float:
+        """The corpus's newest file mtime (deterministic recency clock), or wall-clock if no mtimes exist."""
+        row = self.store.conn.execute(
+            "SELECT MAX(json_extract(attrs, '$.mtime')) FROM nodes").fetchone()
+        if row and row[0] is not None:
+            try:
+                return float(row[0])
+            except (TypeError, ValueError):
+                pass
+        import time
+        return time.time()
 
     def _mtimes(self, ids: list) -> dict:
         """``{node_id: epoch mtime | None}``. Reads the symbol's denormalized ``attrs.mtime`` if present,
         else the owning file node's ``attrs.mtime`` via the indexed ``file_uid`` (mirrors the FILTER
-        builder's ``since`` join — Review remediation C5). A file node's own mtime is taken directly."""
+        builder's ``since`` join — Review remediation C5). A file node's own mtime is taken directly. A
+        non-numeric mtime degrades to ``None`` (neutral) rather than crashing the whole rank (P9-8)."""
         rows = self.store.conn.execute(
             "SELECT n.id AS id, "
             "  COALESCE(json_extract(n.attrs, '$.mtime'), json_extract(f.attrs, '$.mtime')) AS mtime "
@@ -159,7 +179,13 @@ class HybridRanker:
             "WHERE n.id IN (SELECT value FROM json_each(:ids))",
             {"ids": json.dumps(ids)},
         ).fetchall()
-        return {r[0]: (float(r[1]) if r[1] is not None else None) for r in rows}
+        out: dict = {}
+        for node_id, mtime in rows:
+            try:
+                out[node_id] = float(mtime) if mtime is not None else None
+            except (TypeError, ValueError):
+                out[node_id] = None
+        return out
 
     def _graph(self):
         if self.graph_view is None:

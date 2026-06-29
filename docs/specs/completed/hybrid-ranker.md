@@ -77,8 +77,12 @@ semantically-similar but leaf utility function that vectors alone would tie it w
 
 | File | Change |
 |------|--------|
-| `src/memorydb/ranker.py` | **New** — `HybridRanker`, `RankWeights`, `Scored` |
-| `src/memorydb/planner.py` | **Modify** — `_explain` ranks expanded nodes via `HybridRanker` before context building |
+| `src/memorydb/ranker.py` | **New** — `HybridRanker`, `RankWeights`, `Scored` (pydantic, TD-010) |
+| `src/memorydb/planner.py` | **Modify** — `explain` attaches `ranking`/`scored` (additive); ctor accepts injectable `graph_view`/`ranker` |
+| `src/memorydb/context.py` | **Modify** — `_build_explain` prefers `result["ranking"]` when present (else the seed/depth proxy) |
+| `src/memorydb/eval/__init__.py` | **Modify** — `_explain_ranking` prefers `result["ranking"]` so eval metrics measure the ranker |
+| `src/memorydb/api.py` | **Modify** — `MemoryDB` shares one `GraphView` with the planner; `open(graph_view=, ranker=)` injection |
+| `src/memorydb/__init__.py` | **Modify** — export `HybridRanker`, `RankWeights`, `Scored` |
 
 ## Edge cases & failure modes
 
@@ -151,6 +155,32 @@ Landed as [`src/memorydb/ranker.py`](../../../src/memorydb/ranker.py) (`HybridRa
 - **Normalization guard:** min-max over the candidate set **divides by zero** when there is a single candidate or all
   scores are equal — guard with `range == 0 → contribution 0.5` (neutral) and keep the deterministic uid tie-break.
   Add `test_single_candidate` and `test_all_equal_scores` to the plan.
+
+## Mega-review remediation (2026-06-29)
+
+From the post-merge mega review ([adversarial-review-2026-06-29-pr9.md](../adversarial-review-2026-06-29-pr9.md)),
+all confirmed findings remediated (suite: 284 green, 25 ranker cases):
+
+- **P9-1 (High, test):** the headline hub test used an *out-only* hub, which ties the leaf under real PageRank
+  (PageRank elevates *called-by-many*, not *calls-many*) — it only passed via the forced degree fallback. Rebuilt
+  with an **in-degree** hub (callers → hub) so it dominates under both, plus a non-forced `@graph` PageRank variant.
+- **P9-2 / P9-3 (High, test):** the all-equal tie-break test was a tautology (ascending input + stable sort) — now
+  feeds descending ids; the context-prefers-ranking test couldn't tell ranking from the proxy (both headed with the
+  same node) — now asserts the full order *and* that it diverges from the proxy.
+- **P9-4 (integration):** `MemoryDB` now builds one `GraphView` and shares it with the planner's ranker (no more two
+  views per store); `open(graph_view=, ranker=)` makes the injection end-to-end.
+- **P9-5 (integration):** the eval harness `_explain_ranking` now prefers `result["ranking"]`, so EXPLAIN metrics
+  actually measure the hybrid ranker (was computing its own seed/uid order).
+- **P9-6 (reproducibility):** `rank`'s `now` defaults to the **corpus's newest mtime** (deterministic, corpus-
+  relative recency) instead of wall-clock, so ranking is reproducible run-over-run for the eval harness.
+- **P9-7 (consistency):** `RankWeights`/`Scored` are now pydantic `BaseModel`s (TD-010) — `Field(ge=0)` rejects a
+  negative weight (P9-12), the planner emits `Scored.model_dump()`.
+- **P9-8 / P9-9 (robustness):** a malformed `attrs.mtime` degrades that node to neutral recency (was crashing the
+  whole rank); the half-life is re-validated at point of use (tolerates a post-construction mutation to 0/negative).
+- **P9-11:** a self-loop is counted once in the confidence mean (the dst arm excludes `src == dst`).
+- **P9-13:** added coverage for varying edge confidence, custom half-life, a symbol's denormalized mtime, the
+  negative-cosine clamp, dedupe, dim-mismatch, the planner degrade path, and the reproducible default `now`.
+- **P9-10 (accepted):** a non-existent candidate id is scored neutral (unreachable via the planner; documented).
 
 ## References
 

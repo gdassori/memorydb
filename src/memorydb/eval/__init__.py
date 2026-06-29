@@ -168,9 +168,17 @@ class Evaluator:
 
     @staticmethod
     def _explain_ranking(result: dict) -> list:
-        """Rank EXPLAIN nodes: vector seeds first (best match), then the rest of the subgraph by id —
-        deterministic and faithful to what the planner considers most relevant."""
+        """Rank EXPLAIN nodes for scoring. Prefer the planner's hybrid ``ranking`` (vector+centrality+
+        confidence+recency) when present, mapped id→uid — so the eval metrics actually measure the ranker
+        (P9-5). Fall back to the seed-first/uid proxy otherwise (LOCATE-less results, or a degraded EXPLAIN
+        with no ranking). Both orders are deterministic (the ranker pins ``now`` to the corpus mtime)."""
         by_id = {n["id"]: n["uid"] for n in result.get("nodes", [])}
+        ranking = result.get("ranking")
+        if ranking:
+            ranked = [by_id[i] for i in ranking if i in by_id]
+            # append any node missing from the ranking (defensive), uid-ordered for determinism
+            rest = sorted(uid for nid, uid in by_id.items() if nid not in set(ranking))
+            return _dedupe(ranked + rest)
         seeds = [by_id[i] for i in result.get("seeds", []) if i in by_id]
         seen = set(seeds)
         # Order the non-seed remainder by uid (churn-invariant), not by node id which the indexer's

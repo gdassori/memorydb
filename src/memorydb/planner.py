@@ -300,8 +300,7 @@ class RetrievalPlanner:
             try:
                 scored = self._hybrid_ranker().rank(ids, qvec, depth=depth)
                 result["ranking"] = [s.node_id for s in scored]
-                result["scored"] = [{"node_id": s.node_id, "score": s.score, "breakdown": s.breakdown}
-                                    for s in scored]
+                result["scored"] = [s.model_dump() for s in scored]
             except Exception:   # noqa: BLE001 - ranking is a refinement, never a hard dependency
                 _LOG.debug("hybrid ranking failed; returning unranked EXPLAIN result", exc_info=True)
         return result
