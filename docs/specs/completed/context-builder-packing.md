@@ -185,4 +185,4 @@ division lives inside a comprehension that does not iterate when `seeds == []`) 
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-006](../../decisions/TD-006-graph-aware-embeddings-staleness.md)
-- [hybrid-ranker.md](../active/hybrid-ranker.md), [public-api-facade.md](public-api-facade.md)
+- [hybrid-ranker.md](hybrid-ranker.md), [public-api-facade.md](public-api-facade.md)

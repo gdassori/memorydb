@@ -16,6 +16,7 @@ from .models import Edge, Intent, Node, Rel
 from .planner import DefaultIntentClassifier, IntentResult, LLMIntentClassifier, RetrievalPlanner
 from .ports import LLMClient
 from .query_cache import QueryEmbeddingCache
+from .ranker import HybridRanker, RankWeights, Scored
 from .store import Store
 from .vector import BruteForceVectorIndex, SqliteVecIndex, make_vector_index, pack, unpack
 
@@ -43,6 +44,9 @@ __all__ = [
     "QueryEmbeddingCache",
     "build_filter_query",
     "GraphView",
+    "HybridRanker",
+    "RankWeights",
+    "Scored",
     "HashingEmbedder",
     "EmbeddingPipeline",
     "DefaultSerializer",

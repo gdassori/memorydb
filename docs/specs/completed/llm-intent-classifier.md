@@ -230,4 +230,4 @@ LLM-fallback contract, not DB errors); `max_cache=0` disabling the bound (a deli
 ## References
 
 - [TD-007](../../decisions/TD-007-intent-routed-retrieval-tj-is-orchestration.md), [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)
-- [context-builder-packing.md](context-builder-packing.md), [hybrid-ranker.md](../active/hybrid-ranker.md)
+- [context-builder-packing.md](context-builder-packing.md), [hybrid-ranker.md](hybrid-ranker.md)

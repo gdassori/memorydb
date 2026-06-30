@@ -54,10 +54,12 @@ class MemoryDB:
     is injectable, and :attr:`store` / :attr:`planner` are escape hatches to the raw substrate."""
 
     def __init__(self, store, embedder, extractors, classifier, vector_index, query_cache=None,
-                 graph_view=None) -> None:
+                 graph_view=None, ranker=None) -> None:
         self._closed = False            # set first so any property reading it during init is well-defined
         self._store = store
-        self._graph_view = graph_view   # lazily built on first access if not injected (TD-003 / graph spec)
+        # One GraphView shared by the facade's escape hatch AND the planner's ranker (TD-003 / graph spec) —
+        # building it here (cheap, stateless) avoids two independent views over one store (P9-4).
+        self._graph_view = graph_view or GraphView(store)
         self._embedder = embedder
         self._extractors = list(extractors)
         self._serializer = DefaultSerializer()
@@ -67,13 +69,13 @@ class MemoryDB:
         self._indexer = Indexer(store, self._extractors, embedder=None, ignore=IgnoreMatcher())
         store.attach_index(vector_index)   # set_embedding keeps the (vec0) index in sync (sqlite-vec-acceleration)
         self._planner = RetrievalPlanner(store, embedder, index=vector_index, classifier=classifier,
-                                         query_cache=query_cache)
+                                         query_cache=query_cache, graph_view=self._graph_view, ranker=ranker)
         self._builder = ContextBuilder()
 
     # --- construction ------------------------------------------------------
     @classmethod
-    def open(cls, path: str = ":memory:", *, embedder=None, extractors=None,
-             classifier=None, vector_index=None, query_cache=None, graph_view=None) -> "MemoryDB":
+    def open(cls, path: str = ":memory:", *, embedder=None, extractors=None, classifier=None,
+             vector_index=None, query_cache=None, graph_view=None, ranker=None) -> "MemoryDB":
         """Open (or create) a MemoryDB at ``path`` with sane, overridable defaults.
 
         Defaults: ``HashingEmbedder`` (offline, NOT semantic-quality — pass a real model for
@@ -95,7 +97,7 @@ class MemoryDB:
         if vector_index is None:
             vector_index = make_vector_index(store)
         db = cls(store, embedder, extractors, classifier, vector_index, query_cache=query_cache,
-                 graph_view=graph_view)
+                 graph_view=graph_view, ranker=ranker)
         db._check_embedder_compat()
         return db
 
@@ -216,11 +218,11 @@ class MemoryDB:
 
     @property
     def graph_view(self) -> GraphView:
-        """On-demand graph algorithms over the substrate (PageRank/centrality/paths — TD-003). Lazily
-        built over :attr:`store` on first access (or injected via ``open(graph_view=…)``); the hybrid
-        ranker reaches centrality through ``graph_view.centrality_scores(seed_ids)``."""
+        """On-demand graph algorithms over the substrate (PageRank/centrality/paths — TD-003). Built over
+        :attr:`store` in ``__init__`` (or injected via ``open(graph_view=…)``) and **shared** with the
+        planner's hybrid ranker, which reaches centrality through ``graph_view.centrality_scores(seed_ids)``."""
         self._ensure_open()
-        if self._graph_view is None:
+        if self._graph_view is None:                       # defensive: __init__ always sets it
             self._graph_view = GraphView(self._store)
         return self._graph_view
 
