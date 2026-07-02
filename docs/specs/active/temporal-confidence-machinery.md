@@ -23,7 +23,7 @@ facts coexist with the latest winning by default. Done = `recall("where did Guid
 
 The columns exist since v0 ([TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md)); only
 the machinery was deferred because it taxes every write and is partly a research problem (calibration). Most relevant
-to agent memory ([memory-adapter-agent-memory.md](memory-adapter-agent-memory.md)); for code, `confidence` is already
+to agent memory ([memory-adapter-agent-memory.md](../completed/memory-adapter-agent-memory.md)); for code, `confidence` is already
 used statically by the ranker/LOCATE ([TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)).
 
 ## Data model & interfaces
@@ -121,4 +121,4 @@ cannot keep two time-versions under the same uid. Instead:
 ## References
 
 - [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md), [TD-005](../../decisions/TD-005-multilang-treesitter-coarse-edges-confidence.md)
-- [memory-adapter-agent-memory.md](memory-adapter-agent-memory.md), [reflection-daemon.md](reflection-daemon.md)
+- [memory-adapter-agent-memory.md](../completed/memory-adapter-agent-memory.md), [reflection-daemon.md](reflection-daemon.md)
