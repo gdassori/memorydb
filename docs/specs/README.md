@@ -46,7 +46,7 @@ and the `agentic spec` tooling).
 
 | Spec | Scope | TDs | Status |
 |------|-------|-----|--------|
-| [memory-adapter-agent-memory](active/memory-adapter-agent-memory.md) | Entities + episodic/semantic/procedural memory adapter | TD-002, TD-008, TD-009 | planned |
+| [memory-adapter-agent-memory](completed/memory-adapter-agent-memory.md) | Entities + episodic/semantic/procedural memory adapter | TD-002, TD-008, TD-009 | completed |
 | [concept-ontology-layer](active/concept-ontology-layer.md) | Auto-extracted concept nodes over the symbol graph | TD-008 | planned |
 | [temporal-confidence-machinery](active/temporal-confidence-machinery.md) | Temporal validity queries + confidence decay/calibration | TD-008, TD-009 | planned |
 | [reflection-daemon](active/reflection-daemon.md) | Periodic clustering → concept synthesis ("grow your own ontology") | TD-008 | planned |

@@ -20,8 +20,8 @@ A domain-agnostic core (`Node` / `Edge` / `Vector`) with injectable ports
 ([TD-002](docs/decisions/TD-002-ports-and-adapters-generic-substrate.md)).
 
 ```
-adapters/  -> CodeAdapter (tree-sitter)        MemoryAdapter (later)
-core/      -> store · query (recursive CTE) · vector · planner (intent routing)
+adapters/  -> CodeAdapter (tree-sitter)        MemoryAdapter (agent memory)
+core/      -> store · query (recursive CTE) · vector · planner (intent routing) · ranker (hybrid fusion)
 storage/   -> SQLite (+ optional sqlite-vec)
 ```
 

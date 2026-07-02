@@ -1,7 +1,8 @@
 ---
 title: "MemoryAdapter — agent memory (episodic / semantic / procedural)"
-status: planned
+status: completed
 created: 2026-06-22
+completed: 2026-06-30
 author: claude
 related_tds: [TD-002, TD-008, TD-009]
 components: [adapters/memory]
@@ -24,7 +25,7 @@ with provenance and (later) temporal/confidence metadata. Done = the notificatio
 The substrate is domain-agnostic ([TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md)); this
 adapter maps memory concepts onto generic `Node`/`Edge`. It uses the metadata columns reserved in v0
 (`source`, `valid_from`/`valid_to`, `confidence`) — but the heavy *machinery* (decay, temporal queries) is its
-own deferred spec ([temporal-confidence-machinery.md](temporal-confidence-machinery.md)), per
+own deferred spec ([temporal-confidence-machinery.md](../active/temporal-confidence-machinery.md)), per
 [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md).
 
 ## Data model & interfaces
@@ -92,11 +93,38 @@ stores benefit from the deferred machinery (decay, compaction) to avoid unbounde
 
 ## Tasks
 
-- [ ] memory node/relation vocabulary + tier model
-- [ ] `remember` / `relate` / `entity` / `recall`
-- [ ] memory neighborhood serializer (entities + time)
-- [ ] dedupe + contradiction-preserving storage
-- [ ] zero-dep tests (links / recall / procedural / dedupe)
+- [x] memory node/relation vocabulary + tier model
+- [x] `remember` / `relate` / `entity` / `recall`
+- [x] memory neighborhood serializer (entities + time)
+- [x] dedupe + contradiction-preserving storage
+- [x] zero-dep tests (links / recall / procedural / dedupe)
+
+## Implementation notes (2026-06-30)
+
+Landed as [`src/memorydb/adapters/memory/__init__.py`](../../../src/memorydb/adapters/memory/__init__.py)
+(`MemoryAdapter`) + [`serializer.py`](../../../src/memorydb/adapters/memory/serializer.py)
+(`MemorySerializer`), tested by [`tests/test_memory_adapter.py`](../../../tests/test_memory_adapter.py)
+(11 zero-dep cases). Accessed via its path (`from memorydb.adapters.memory import MemoryAdapter`), like
+`CodeAdapter` — kept out of the top-level `__init__` to avoid a core↔adapter import cycle (TD-002).
+
+- **Identity / dedupe:** entities are keyed `entity::{normalized-name}` (one idempotent path shared by
+  `entity()` and the auto-create in `remember`/`relate` — the C2 remediation). Semantic/procedural nodes are
+  content-keyed (`fact::`/`procedure::{sha1(normalized text)}`) so a re-`remember` dedupes and **reinforces**
+  confidence toward 1.0 (`prev + (1-prev)/2`); an **episode** is keyed by `(text, time, source)` so the same
+  utterance at a different time is a distinct event.
+- **Contradictions are kept, not overwritten** (C1): "lives in Bangkok" vs "lives in Italy" are different text
+  → two `Fact` nodes. Resolution stays the deferred temporal-confidence spec's job (TD-008/009); this adapter
+  never silently supersedes.
+- **Unknown entity** referenced by a mention/relation is auto-created at low confidence (0.5); an explicit
+  `entity()` upgrades it to 1.0.
+- **Serializer:** memory recall is about *content*, so `MemorySerializer` leads with the node body, then linked
+  entity names + `valid_from`/`source` — unlike the code serializer which embeds a symbol's graph role.
+- **`recall`** lazily flushes embeddings (`pipeline.refresh()`), vector-seeds restricted to the requested
+  tiers' node types (+ `Entity` connectors), then expands over the entity graph via `query.traverse` — returning
+  the same `{query, seeds, nodes, edges}` shape as the planner's EXPLAIN.
+- **Procedural tier:** `remember(..., kind="procedural", steps=[…])` creates ordered `Step --STEP_OF-->
+  Procedure` edges (order in the step's `attrs.order`); `steps_of(name)` reads them back in order. (The `steps=`
+  kwarg + `steps_of` reader are a small, documented extension beyond the spec's interface block.)
 
 ## Open questions
 
@@ -107,8 +135,8 @@ stores benefit from the deferred machinery (decay, compaction) to avoid unbounde
 
 ## Risks
 
-- **Unbounded growth** of episodic memory → needs compaction/decay ([temporal-confidence-machinery.md](temporal-confidence-machinery.md))
-  and concepts ([concept-ontology-layer.md](concept-ontology-layer.md)) to summarize; flagged, not solved here.
+- **Unbounded growth** of episodic memory → needs compaction/decay ([temporal-confidence-machinery.md](../active/temporal-confidence-machinery.md))
+  and concepts ([concept-ontology-layer.md](../active/concept-ontology-layer.md)) to summarize; flagged, not solved here.
 
 ## Review remediation (2026-06-22)
 
@@ -121,4 +149,4 @@ stores benefit from the deferred machinery (decay, compaction) to avoid unbounde
 ## References
 
 - [TD-002](../../decisions/TD-002-ports-and-adapters-generic-substrate.md), [TD-008](../../decisions/TD-008-defer-temporal-confidence-ontology-reflection.md)
-- [temporal-confidence-machinery.md](temporal-confidence-machinery.md), [concept-ontology-layer.md](concept-ontology-layer.md), [reflection-daemon.md](reflection-daemon.md)
+- [temporal-confidence-machinery.md](../active/temporal-confidence-machinery.md), [concept-ontology-layer.md](../active/concept-ontology-layer.md), [reflection-daemon.md](../active/reflection-daemon.md)
